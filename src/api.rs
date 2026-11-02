@@ -1123,9 +1123,12 @@ impl Client {
             + "/#/sso?clientId="
             + "cli"
             + "&redirectUri="
-            + urlencoding::encode(callback_url.as_str())
-                .into_owned()
-                .as_str()
+            + percent_encoding::utf8_percent_encode(
+                callback_url.as_str(),
+                URI_COMPONENT,
+            )
+            .to_string()
+            .as_str()
             + "&state="
             + state.as_str()
             + "&codeChallenge="
@@ -1613,6 +1616,14 @@ async fn find_free_port(bottom: u16, top: u16) -> Result<u16> {
         range: format!("({bottom}..{top})"),
     })
 }
+
+// everything except the unreserved characters from rfc 3986
+const URI_COMPONENT: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
 
 async fn open_browser(url: &str) -> std::io::Result<()> {
     let openers: &[&[&str]] = if cfg!(target_os = "macos") {

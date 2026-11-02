@@ -157,7 +157,7 @@ fn sign_response(
             let e = rsa::BigUint::from_bytes_be(key.public.e.as_bytes());
             let rsa_key = rsa::RsaPrivateKey::from_p_q(p, q, e)?;
 
-            let mut rng = rand_8::rngs::OsRng;
+            let mut rng = rsa::rand_core::OsRng;
 
             let (algorithm, sig_bytes) = if flags & SSH_AGENT_RSA_SHA2_512
                 != 0
