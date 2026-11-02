@@ -6,7 +6,7 @@ use crate::prelude::*;
 
 use rand::distr::SampleString as _;
 use sha2::Digest as _;
-use tokio::io::AsyncReadExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::json::{
     DeserializeJsonWithPath as _, DeserializeJsonWithPathAsync as _,
@@ -841,20 +841,22 @@ impl Client {
     }
 
     async fn reqwest_client(&self) -> Result<reqwest::Client> {
-        let mut default_headers = axum::http::HeaderMap::new();
+        let mut default_headers = reqwest::header::HeaderMap::new();
         default_headers.insert(
             "Bitwarden-Client-Name",
-            axum::http::HeaderValue::from_static(BITWARDEN_CLIENT),
+            reqwest::header::HeaderValue::from_static(BITWARDEN_CLIENT),
         );
         default_headers.insert(
             "Bitwarden-Client-Version",
-            axum::http::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+            reqwest::header::HeaderValue::from_static(env!(
+                "CARGO_PKG_VERSION"
+            )),
         );
         default_headers.append(
             "Device-Type",
             // unwrap is safe here because DEVICE_TYPE is a number and digits
             // are valid ASCII
-            axum::http::HeaderValue::from_str(&DEVICE_TYPE.to_string())
+            reqwest::header::HeaderValue::from_str(&DEVICE_TYPE.to_string())
                 .unwrap(),
         );
         let user_agent = format!(
@@ -1606,78 +1608,129 @@ async fn find_free_port(bottom: u16, top: u16) -> Result<u16> {
     })
 }
 
-#[derive(Clone)]
-struct SSOHandlerState {
-    state: String,
-    sender: tokio::sync::mpsc::Sender<Result<String>>,
-}
-
 async fn start_sso_callback_server(
     listener: tokio::net::TcpListener,
     state: &str,
 ) -> Result<String> {
-    let (shut_sender, shut_receiver) = tokio::sync::mpsc::channel(1);
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-
-    let sso_handler_state = std::sync::Arc::new(SSOHandlerState {
-        state: state.to_string(),
-        sender: shut_sender,
-    });
-
-    let app = axum::Router::new()
-        .route("/", axum::routing::get(handle_sso_callback))
-        .with_state(sso_handler_state);
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(sso_server_graceful_shutdown(
-            sender,
-            shut_receiver,
-        ))
-        .await
-        .map_err(|e| Error::FailedToProcessSSOCallback {
-            msg: e.to_string(),
-        })?;
-
-    receiver.recv().await.unwrap()
-}
-
-async fn sso_server_graceful_shutdown(
-    sender: tokio::sync::mpsc::Sender<Result<String>>,
-    mut receiver: tokio::sync::mpsc::Receiver<Result<String>>,
-) {
-    sender.send(receiver.recv().await.unwrap()).await.unwrap();
-}
-
-async fn handle_sso_callback(
-    axum::extract::State(state): axum::extract::State<
-        std::sync::Arc<SSOHandlerState>,
-    >,
-    axum::extract::Query(params): axum::extract::Query<
-        std::collections::HashMap<String, String>,
-    >,
-) -> axum::http::Response<String> {
-    match sso_query_code(&params, state.state.as_str()) {
-        Ok(sso_code) => {
-            state.sender.send(Ok(sso_code)).await.unwrap();
-
-            axum::http::Response::builder().status(axum::http::StatusCode::OK).
-            body(
-                "<html><head><title>Success | rbw</title></head><body> \
-                  <h1>Successfully authenticated with rbw</h1> \
-                  <p>You may now close this tab and return to the terminal.</p> \
-                  </body></html>".to_string()).unwrap()
-        }
-        Err(e) => {
-            state.sender.send(Err(e)).await.unwrap();
-
-            axum::http::Response::builder().status(axum::http::StatusCode::BAD_REQUEST).
-            body(
-                "<html><head><title>Failed | rbw</title></head><body> \
-                  <h1>Something went wrong logging into the rbw</h1> \
-                  <p>You may now close this tab and return to the terminal.</p> \
-                  </body></html>".to_string()).unwrap()
+    let state: std::sync::Arc<str> = state.into();
+    // connections are handled concurrently, because browsers may open
+    // speculative connections which never send a request. any connections
+    // still open are aborted when this returns.
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            res = listener.accept() => {
+                let (stream, _) = res.map_err(|e| {
+                    Error::FailedToProcessSSOCallback { msg: e.to_string() }
+                })?;
+                connections.spawn(handle_sso_connection(stream, state.clone()));
+            }
+            Some(res) = connections.join_next() => {
+                if let Ok(Some(sso_code)) = res {
+                    return sso_code;
+                }
+            }
         }
     }
+}
+
+// returns None if the connection didn't contain the sso callback request
+async fn handle_sso_connection(
+    mut stream: tokio::net::TcpStream,
+    state: std::sync::Arc<str>,
+) -> Option<Result<String>> {
+    let head = read_http_request_head(&mut stream).await?;
+    let mut request_line = head.lines().next()?.split(' ');
+    let method = request_line.next()?;
+    let target = request_line.next()?;
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+
+    if method != "GET" {
+        let _ =
+            write_http_response(&mut stream, "405 Method Not Allowed", "")
+                .await;
+        return None;
+    }
+    if path != "/" {
+        let _ = write_http_response(&mut stream, "404 Not Found", "").await;
+        return None;
+    }
+
+    let params = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    let res = sso_query_code(&params, &state);
+    let (status, body) = if res.is_ok() {
+        (
+            "200 OK",
+            "<html><head><title>Success | rbw</title></head><body> \
+              <h1>Successfully authenticated with rbw</h1> \
+              <p>You may now close this tab and return to the terminal.</p> \
+              </body></html>",
+        )
+    } else {
+        (
+            "400 Bad Request",
+            "<html><head><title>Failed | rbw</title></head><body> \
+              <h1>Something went wrong logging into the rbw</h1> \
+              <p>You may now close this tab and return to the terminal.</p> \
+              </body></html>",
+        )
+    };
+    let _ = write_http_response(&mut stream, status, body).await;
+
+    Some(res)
+}
+
+async fn read_http_request_head(
+    stream: &mut tokio::net::TcpStream,
+) -> Option<String> {
+    const MAX_HEAD_LEN: usize = 16 * 1024;
+
+    // the whole head needs to be read (even though we only use the request
+    // line), because closing a socket with unread data resets the
+    // connection, which may prevent the browser from showing our response
+    let mut head = vec![];
+    let mut buf = [0; 1024];
+    loop {
+        if head.len() > MAX_HEAD_LEN {
+            return None;
+        }
+        let n = stream.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        // only the new bytes (and the end of the previous read, in case the
+        // terminator was split) need to be searched
+        let search_start = head.len().saturating_sub(3);
+        head.extend_from_slice(&buf[..n]);
+        if head[search_start..].windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(head).ok()
+}
+
+async fn write_http_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    body: &str,
+) -> std::io::Result<()> {
+    stream
+        .write_all(
+            format!(
+                "HTTP/1.1 {status}\r\n\
+                Content-Type: text/html; charset=utf-8\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\
+                \r\n\
+                {body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await?;
+    stream.shutdown().await
 }
 
 fn sso_query_code(
