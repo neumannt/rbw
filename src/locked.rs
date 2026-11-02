@@ -7,7 +7,7 @@ static REGION_LOCK_WORKS: std::sync::OnceLock<bool> =
 
 pub struct Vec {
     data: Box<arrayvec::ArrayVec<u8, LEN>>,
-    _lock: Option<region::LockGuard>,
+    _lock: Option<MemoryLock>,
 }
 
 impl Default for Vec {
@@ -15,10 +15,10 @@ impl Default for Vec {
         let data = Box::new(arrayvec::ArrayVec::<_, LEN>::new());
         let lock = match REGION_LOCK_WORKS.get() {
             Some(true) => {
-                Some(region::lock(data.as_ptr(), data.capacity()).unwrap())
+                Some(MemoryLock::new(data.as_ptr(), data.capacity()).unwrap())
             }
             Some(false) => None,
-            None => match region::lock(data.as_ptr(), data.capacity()) {
+            None => match MemoryLock::new(data.as_ptr(), data.capacity()) {
                 Ok(lock) => {
                     let _ = REGION_LOCK_WORKS.set(true);
                     Some(lock)
@@ -32,6 +32,39 @@ impl Default for Vec {
             },
         };
         Self { data, _lock: lock }
+    }
+}
+
+// a range of memory locked into ram, which is unlocked again when dropped
+struct MemoryLock {
+    ptr: *mut std::ffi::c_void,
+    len: usize,
+}
+
+// SAFETY: the pointer is never dereferenced, only used to unlock the range
+unsafe impl Send for MemoryLock {}
+// SAFETY: as above
+unsafe impl Sync for MemoryLock {}
+
+impl MemoryLock {
+    fn new(ptr: *const u8, len: usize) -> std::io::Result<Self> {
+        // posix allows mlock to require page aligned ranges
+        let page_size = rustix::param::page_size();
+        #[allow(clippy::as_conversions)]
+        let offset = (ptr as usize) % page_size;
+        let ptr = ptr.wrapping_sub(offset).cast_mut().cast();
+        let len = (len + offset).next_multiple_of(page_size);
+        // SAFETY: mlock doesn't access the memory, and the range covers only
+        // whole pages containing our allocation
+        unsafe { rustix::mm::mlock(ptr, len) }?;
+        Ok(Self { ptr, len })
+    }
+}
+
+impl Drop for MemoryLock {
+    fn drop(&mut self) {
+        // SAFETY: this is the same range that was locked in new
+        let _ = unsafe { rustix::mm::munlock(self.ptr, self.len) };
     }
 }
 

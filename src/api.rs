@@ -1116,33 +1116,39 @@ impl Client {
             .await
             .map_err(|e| Error::CreateSSOCallbackServer { err: e })?;
 
-        let callback_server =
-            start_sso_callback_server(listener, state.as_str());
-
         let callback_url =
             "http://localhost:".to_string() + port.to_string().as_str();
 
-        open::that(
-            self.ui_url.clone()
-                + "/#/sso?clientId="
-                + "cli"
-                + "&redirectUri="
-                + urlencoding::encode(callback_url.as_str())
-                    .into_owned()
-                    .as_str()
-                + "&state="
-                + state.as_str()
-                + "&codeChallenge="
-                + code_challenge.as_str()
-                + "&identifier="
-                + sso_id,
-        )
-        .map_err(|e| Error::FailedToOpenWebBrowser { err: e })?;
+        let sso_url = self.ui_url.clone()
+            + "/#/sso?clientId="
+            + "cli"
+            + "&redirectUri="
+            + urlencoding::encode(callback_url.as_str())
+                .into_owned()
+                .as_str()
+            + "&state="
+            + state.as_str()
+            + "&codeChallenge="
+            + code_challenge.as_str()
+            + "&identifier="
+            + sso_id;
+
+        // the browser opener may not exit until the browser does, so the
+        // callback server needs to run while we wait for it
+        let callback_server =
+            start_sso_callback_server(listener, state.as_str());
+        let browser = open_browser(&sso_url);
+        tokio::pin!(callback_server, browser);
         // TODO: probably it'd be better to display the URL in the console if the automatic
         // open operation fails, instead of failing the whole process? E.g. docker container
         // case
-
-        let sso_code = callback_server.await?;
+        let sso_code = tokio::select! {
+            res = &mut callback_server => res?,
+            res = &mut browser => {
+                res.map_err(|e| Error::FailedToOpenWebBrowser { err: e })?;
+                callback_server.await?
+            }
+        };
 
         Ok((sso_code, sso_code_verifier, callback_url))
     }
@@ -1606,6 +1612,41 @@ async fn find_free_port(bottom: u16, top: u16) -> Result<u16> {
     Err(Error::FailedToFindFreePort {
         range: format!("({bottom}..{top})"),
     })
+}
+
+async fn open_browser(url: &str) -> std::io::Result<()> {
+    let openers: &[&[&str]] = if cfg!(target_os = "macos") {
+        &[&["open"]]
+    } else {
+        &[&["xdg-open"], &["gio", "open"], &["wslview"], &["kde-open"]]
+    };
+    let mut err = None;
+    for opener in openers {
+        // the browser may keep running in the background, so don't let it
+        // inherit our stdout and stderr
+        let res = tokio::process::Command::new(opener[0])
+            .args(&opener[1..])
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        let e = match res {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => std::io::Error::other(format!(
+                "{} exited with {status}",
+                opener.join(" ")
+            )),
+            Err(e) => e,
+        };
+        // report a failing opener rather than a later one that isn't
+        // installed
+        if err.is_none() || e.kind() != std::io::ErrorKind::NotFound {
+            err = Some(e);
+        }
+    }
+    Err(err.unwrap())
 }
 
 async fn start_sso_callback_server(

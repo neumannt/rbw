@@ -344,6 +344,30 @@ impl Config {
     }
 }
 
+// greedily wraps text at whitespace to fit within the given width
+fn wrap(text: &str, width: usize) -> String {
+    let mut wrapped = String::new();
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            wrapped.push('\n');
+        }
+        let mut line_width = 0;
+        for word in line.split_whitespace() {
+            let word_width = word.chars().count();
+            if line_width > 0 && line_width + 1 + word_width > width {
+                wrapped.push('\n');
+                line_width = 0;
+            } else if line_width > 0 {
+                wrapped.push(' ');
+                line_width += 1;
+            }
+            wrapped.push_str(word);
+            line_width += word_width;
+        }
+    }
+    wrapped
+}
+
 fn main() {
     let opt = Opt::parse();
 
@@ -355,7 +379,7 @@ fn main() {
             terminal_size::terminal_size()
         {
             let out = format!("{}: {}", record.level(), record.args());
-            writeln!(buf, "{}", textwrap::fill(&out, usize::from(w) - 1))
+            writeln!(buf, "{}", wrap(&out, usize::from(w) - 1))
         } else {
             writeln!(buf, "{}: {}", record.level(), record.args())
         }
@@ -550,5 +574,23 @@ fn main() {
     if let Err(e) = res {
         eprintln!("{e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_wrap() {
+        assert_eq!(wrap("WARN: short", 20), "WARN: short");
+        assert_eq!(
+            wrap("WARN: some longer message here", 12),
+            "WARN: some\nlonger\nmessage here"
+        );
+        // words longer than the width are not split
+        assert_eq!(wrap("a verylongword b", 5), "a\nverylongword\nb");
+        // existing line breaks are kept
+        assert_eq!(wrap("one two\nthree", 20), "one two\nthree");
     }
 }
