@@ -1814,12 +1814,7 @@ pub fn edit(
 
             if let Some(prev_password) = entry_password.clone() {
                 let new_history_entry = rbw::db::HistoryEntry {
-                    last_used_date: format!(
-                        "{}",
-                        humantime::format_rfc3339(
-                            std::time::SystemTime::now()
-                        )
-                    ),
+                    last_used_date: jiff::Timestamp::now().to_string(),
                     password: prev_password,
                 };
                 history.insert(0, new_history_entry);
