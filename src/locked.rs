@@ -6,68 +6,109 @@ static REGION_LOCK_WORKS: std::sync::OnceLock<bool> =
     std::sync::OnceLock::new();
 
 pub struct Vec {
-    data: Box<[u8; LEN]>,
+    data: Pages,
     len: usize,
-    _lock: Option<MemoryLock>,
 }
 
 impl Default for Vec {
     fn default() -> Self {
-        let data = Box::new([0; LEN]);
-        let lock = match REGION_LOCK_WORKS.get() {
-            Some(true) => Some(MemoryLock::new(data.as_ptr(), LEN).unwrap()),
-            Some(false) => None,
-            None => match MemoryLock::new(data.as_ptr(), LEN) {
-                Ok(lock) => {
+        let mut data = Pages::new(LEN);
+        match REGION_LOCK_WORKS.get() {
+            Some(true) => data.lock().unwrap(),
+            Some(false) => {}
+            None => match data.lock() {
+                Ok(()) => {
                     let _ = REGION_LOCK_WORKS.set(true);
-                    Some(lock)
                 }
                 Err(e) => {
                     if REGION_LOCK_WORKS.set(false).is_ok() {
                         eprintln!("failed to lock memory region: {e}");
                     }
-                    None
                 }
             },
-        };
+        }
+        Self { data, len: 0 }
+    }
+}
+
+// a zeroed allocation consisting of whole pages, which is zeroed again (and
+// unlocked, if it was locked into ram) when dropped. memory locks don't nest,
+// so this ensures that unlocking it can never unlock a page that is shared
+// with another locked allocation.
+struct Pages {
+    ptr: std::ptr::NonNull<u8>,
+    layout: std::alloc::Layout,
+    locked: bool,
+}
+
+// SAFETY: Pages uniquely owns its allocation, like a Box
+unsafe impl Send for Pages {}
+// SAFETY: as above
+unsafe impl Sync for Pages {}
+
+impl Pages {
+    fn new(len: usize) -> Self {
+        assert!(len > 0);
+        let page_size = rustix::param::page_size();
+        let layout = std::alloc::Layout::from_size_align(
+            len.next_multiple_of(page_size),
+            page_size,
+        )
+        .unwrap();
+        // SAFETY: the layout has a nonzero size
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        let ptr = std::ptr::NonNull::new(ptr)
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
         Self {
-            data,
-            len: 0,
-            _lock: lock,
+            ptr,
+            layout,
+            locked: false,
+        }
+    }
+
+    fn lock(&mut self) -> std::io::Result<()> {
+        // SAFETY: mlock doesn't access the memory, and the range is exactly
+        // our allocation, which is page aligned
+        unsafe {
+            rustix::mm::mlock(self.ptr.as_ptr().cast(), self.layout.size())
+        }?;
+        self.locked = true;
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        // SAFETY: the allocation is initialized (zeroed in new), and is
+        // owned by self
+        unsafe {
+            std::slice::from_raw_parts(self.ptr.as_ptr(), self.layout.size())
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: as above, and we have exclusive access through &mut self
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.ptr.as_ptr(),
+                self.layout.size(),
+            )
         }
     }
 }
 
-// a range of memory locked into ram, which is unlocked again when dropped
-struct MemoryLock {
-    ptr: *mut std::ffi::c_void,
-    len: usize,
-}
-
-// SAFETY: the pointer is never dereferenced, only used to unlock the range
-unsafe impl Send for MemoryLock {}
-// SAFETY: as above
-unsafe impl Sync for MemoryLock {}
-
-impl MemoryLock {
-    fn new(ptr: *const u8, len: usize) -> std::io::Result<Self> {
-        // posix allows mlock to require page aligned ranges
-        let page_size = rustix::param::page_size();
-        #[allow(clippy::as_conversions)]
-        let offset = (ptr as usize) % page_size;
-        let ptr = ptr.wrapping_sub(offset).cast_mut().cast();
-        let len = (len + offset).next_multiple_of(page_size);
-        // SAFETY: mlock doesn't access the memory, and the range covers only
-        // whole pages containing our allocation
-        unsafe { rustix::mm::mlock(ptr, len) }?;
-        Ok(Self { ptr, len })
-    }
-}
-
-impl Drop for MemoryLock {
+impl Drop for Pages {
     fn drop(&mut self) {
-        // SAFETY: this is the same range that was locked in new
-        let _ = unsafe { rustix::mm::munlock(self.ptr, self.len) };
+        self.as_mut_slice().zeroize();
+        if self.locked {
+            // SAFETY: this is the same range that was locked in lock
+            let _ = unsafe {
+                rustix::mm::munlock(
+                    self.ptr.as_ptr().cast(),
+                    self.layout.size(),
+                )
+            };
+        }
+        // SAFETY: ptr was allocated in new with the same layout
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }
 
@@ -77,35 +118,34 @@ impl Vec {
     }
 
     pub fn data(&self) -> &[u8] {
-        &self.data[..self.len]
+        &self.data.as_slice()[..self.len]
     }
 
     pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data[..self.len]
+        &mut self.data.as_mut_slice()[..self.len]
     }
 
     // zeroes the whole buffer, and extends the length to cover all of it
     pub fn zero(&mut self) {
-        self.data.zeroize();
+        self.data.as_mut_slice()[..LEN].zeroize();
         self.len = LEN;
     }
 
-    pub fn extend(&mut self, it: impl Iterator<Item = u8>) {
-        for byte in it {
-            assert!(self.len < LEN, "locked::Vec capacity exceeded");
-            self.data[self.len] = byte;
-            self.len += 1;
+    pub fn extend(&mut self, mut it: impl Iterator<Item = u8>) {
+        let free = &mut self.data.as_mut_slice()[self.len..LEN];
+        // zip takes from free first, so no bytes are lost from it when free
+        // runs out
+        let mut n = 0;
+        for (dst, byte) in free.iter_mut().zip(&mut it) {
+            *dst = byte;
+            n += 1;
         }
+        self.len += n;
+        assert!(it.next().is_none(), "locked::Vec capacity exceeded");
     }
 
     pub fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
-    }
-}
-
-impl Drop for Vec {
-    fn drop(&mut self) {
-        self.data.zeroize();
     }
 }
 
@@ -236,5 +276,16 @@ mod test {
     fn test_vec_overflow() {
         let mut vec = Vec::new();
         vec.extend(std::iter::repeat_n(0, LEN + 1));
+    }
+
+    #[test]
+    fn test_pages() {
+        let page_size = rustix::param::page_size();
+        let pages = Pages::new(1);
+        #[allow(clippy::as_conversions)]
+        let addr = pages.ptr.as_ptr() as usize;
+        assert_eq!(addr % page_size, 0);
+        assert_eq!(pages.as_slice().len(), page_size);
+        assert!(pages.as_slice().iter().all(|&b| b == 0));
     }
 }
