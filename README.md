@@ -124,7 +124,9 @@ out by running `rbw purge`, and you can explicitly lock the database by running
 functionality.
 
 Run `rbw get <name>` to get your passwords. If you also want to get the username
-or the note associated, you can use the flag `--full`. You can also use the flag
+or the note associated, you can use the flag `--full`, or run `rbw show <name>`
+to see everything except the password and other secrets (`rbw show -c <name>`
+copies the password to the clipboard instead). You can also use the flag
 `--field={field}` to get whatever default or custom field you want. The `--raw`
 flag will show the output as JSON. In addition to matching against the name,
 you can pass a UUID as the name to search for the entry with that id, or a

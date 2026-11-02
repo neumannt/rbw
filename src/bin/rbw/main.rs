@@ -124,6 +124,28 @@ enum Opt {
         list_fields: bool,
     },
 
+    #[command(
+        about = "Display the details of a given entry, except for secrets",
+        long_about = "Display the details of a given entry, except for \
+            secrets\n\n\
+            This shows the same information as `rbw get --full`, but \
+            instead of the password, the TOTP secret, hidden custom \
+            fields, and the card number and CVV, it shows the command \
+            which copies them. With --clipboard, the value \
+            that `rbw get` would display (usually the password) is \
+            copied to the clipboard."
+    )]
+    #[cfg_attr(
+        feature = "clipboard",
+        command(mut_arg("clipboard", |arg| arg.short('c')))
+    )]
+    Show {
+        #[command(flatten)]
+        find_args: FindArgs,
+        #[command(flatten)]
+        clipboard_args: ClipboardArgs,
+    },
+
     #[command(about = "Search for entries")]
     Search {
         #[arg(help = "Search term to locate entries")]
@@ -289,6 +311,7 @@ impl Opt {
             Self::Sync => "sync".to_string(),
             Self::List { .. } => "list".to_string(),
             Self::Get { .. } => "get".to_string(),
+            Self::Show { .. } => "show".to_string(),
             Self::Search { .. } => "search".to_string(),
             Self::Code { .. } => "code".to_string(),
             Self::Add { .. } => "add".to_string(),
@@ -416,6 +439,16 @@ fn main() {
             clipboard_args.mode(),
             find_args.ignorecase,
             list_fields,
+        ),
+        Opt::Show {
+            find_args,
+            clipboard_args,
+        } => commands::show(
+            find_args.needle,
+            find_args.user.as_deref(),
+            find_args.folder.as_deref(),
+            clipboard_args.mode(),
+            find_args.ignorecase,
         ),
         Opt::Search {
             term,

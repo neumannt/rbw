@@ -697,19 +697,43 @@ impl DecryptedCipher {
         }
     }
 
-    fn display_long(&self, desc: &str, clipboard: crate::clipboard::Mode) {
+    /// Displays all fields of the entry. With `Secrets::Hide`, the password,
+    /// the TOTP secret, hidden custom fields, and the card number and CVV are
+    /// replaced by a command which copies them.
+    fn display_long(
+        &self,
+        desc: &str,
+        clipboard: crate::clipboard::Mode,
+        secrets: &Secrets,
+    ) {
         match &self.data {
             DecryptedData::Login {
                 username,
+                password,
                 totp,
                 uris,
                 ..
             } => {
-                let mut displayed = self.display_short(desc, clipboard);
+                let mut displayed = match secrets {
+                    Secrets::Show => self.display_short(desc, clipboard),
+                    Secrets::Hide { .. } => secrets
+                        .display_main_hint("Password", password.as_deref()),
+                };
                 displayed |=
                     display_field("Username", username.as_deref(), clipboard);
-                displayed |=
-                    display_field("TOTP Secret", totp.as_deref(), clipboard);
+                displayed |= match secrets {
+                    Secrets::Show => display_field(
+                        "TOTP Secret",
+                        totp.as_deref(),
+                        clipboard,
+                    ),
+                    Secrets::Hide { .. } => secrets.display_hint(
+                        "TOTP",
+                        totp.as_deref(),
+                        "code",
+                        "",
+                    ),
+                };
 
                 if let Some(uris) = uris {
                     for uri in uris {
@@ -726,11 +750,8 @@ impl DecryptedCipher {
                 }
 
                 for field in &self.fields {
-                    displayed |= display_field(
-                        field.name.as_deref().unwrap_or("(null)"),
-                        Some(field.value.as_deref().unwrap_or("")),
-                        clipboard,
-                    );
+                    displayed |=
+                        display_custom_field(field, clipboard, secrets);
                 }
 
                 if let Some(notes) = &self.notes {
@@ -742,22 +763,37 @@ impl DecryptedCipher {
             }
             DecryptedData::Card {
                 cardholder_name,
+                number,
                 brand,
                 exp_month,
                 exp_year,
                 code,
-                ..
             } => {
                 let mut displayed = false;
 
-                displayed |= self.display_short(desc, clipboard);
+                displayed |= match secrets {
+                    Secrets::Show => self.display_short(desc, clipboard),
+                    Secrets::Hide { .. } => {
+                        secrets.display_main_hint("Number", number.as_deref())
+                    }
+                };
                 if let (Some(exp_month), Some(exp_year)) =
                     (exp_month, exp_year)
                 {
                     println!("Expiration: {exp_month}/{exp_year}");
                     displayed = true;
                 }
-                displayed |= display_field("CVV", code.as_deref(), clipboard);
+                displayed |= match secrets {
+                    Secrets::Show => {
+                        display_field("CVV", code.as_deref(), clipboard)
+                    }
+                    Secrets::Hide { .. } => secrets.display_hint(
+                        "CVV",
+                        code.as_deref(),
+                        "get",
+                        " -f cvv",
+                    ),
+                };
                 displayed |= display_field(
                     "Name",
                     cardholder_name.as_deref(),
@@ -845,11 +881,8 @@ impl DecryptedCipher {
                 );
 
                 for field in &self.fields {
-                    displayed |= display_field(
-                        field.name.as_deref().unwrap_or("(null)"),
-                        Some(field.value.as_deref().unwrap_or("")),
-                        clipboard,
-                    );
+                    displayed |=
+                        display_custom_field(field, clipboard, secrets);
                 }
 
                 if let Some(notes) = &self.notes {
@@ -1009,6 +1042,69 @@ impl DecryptedCipher {
         println!();
 
         Ok(())
+    }
+}
+
+/// How `DecryptedCipher::display_long` treats secret fields
+enum Secrets {
+    Show,
+    Hide {
+        /// `rbw` arguments selecting the entry, for the displayed hints
+        entry_args: String,
+        /// whether the main secret was already copied to the clipboard
+        copied: bool,
+    },
+}
+
+impl Secrets {
+    /// Like `display_hint`, for the secret which `rbw get` (and `rbw show
+    /// --clipboard`) copies.
+    fn display_main_hint(&self, name: &str, value: Option<&str>) -> bool {
+        if let Self::Hide { copied: true, .. } = self {
+            if value.is_some() {
+                println!("{name}: (copied to clipboard)");
+                return true;
+            }
+        }
+        self.display_hint(name, value, "get", "")
+    }
+
+    /// Displays a placeholder for a hidden secret, with the command to copy
+    /// it, if the secret is set.
+    fn display_hint(
+        &self,
+        name: &str,
+        value: Option<&str>,
+        subcommand: &str,
+        extra_args: &str,
+    ) -> bool {
+        let Self::Hide { entry_args, .. } = self else {
+            return false;
+        };
+        if value.is_none() {
+            return false;
+        }
+        let copy = if cfg!(feature = "clipboard") {
+            " -c"
+        } else {
+            ""
+        };
+        println!(
+            "{name}: (hidden, use `rbw {subcommand} {entry_args}{extra_args}{copy}`)"
+        );
+        true
+    }
+}
+
+/// Quotes `s` for use as a single shell word, if necessary
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.,:/@%+=".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
 
@@ -1418,7 +1514,7 @@ pub fn get(
     } else if raw {
         decrypted.display_json(&desc)?;
     } else if full {
-        decrypted.display_long(&desc, clipboard);
+        decrypted.display_long(&desc, clipboard, &Secrets::Show);
     } else if let Some(field) = field {
         decrypted.display_field(&desc, field, clipboard);
     } else {
@@ -1520,6 +1616,51 @@ pub fn search(
     entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
     print_entry_list(&entries, &fields, raw)?;
+
+    Ok(())
+}
+
+pub fn show(
+    needle: Needle,
+    user: Option<&str>,
+    folder: Option<&str>,
+    clipboard: crate::clipboard::Mode,
+    ignore_case: bool,
+) -> anyhow::Result<()> {
+    unlock()?;
+
+    let db = load_db()?;
+
+    let desc = format!(
+        "{}{}",
+        user.map_or_else(String::new, |s| format!("{s}@")),
+        needle
+    );
+
+    let needle_str = needle.to_string();
+    let (_, decrypted) =
+        find_entry(&db, needle, user, folder, ignore_case)
+            .with_context(|| format!("couldn't find entry for '{desc}'"))?;
+    let copied = clipboard != crate::clipboard::Mode::Off
+        && decrypted.display_short(&desc, clipboard);
+
+    let mut entry_args = shell_quote(&needle_str);
+    if let Some(user) = user {
+        entry_args.push(' ');
+        entry_args.push_str(&shell_quote(user));
+    }
+    if let Some(folder) = folder {
+        entry_args.push_str(" --folder ");
+        entry_args.push_str(&shell_quote(folder));
+    }
+    if ignore_case {
+        entry_args.push_str(" -i");
+    }
+    decrypted.display_long(
+        &desc,
+        crate::clipboard::Mode::Off,
+        &Secrets::Hide { entry_args, copied },
+    );
 
     Ok(())
 }
@@ -2856,6 +2997,27 @@ fn totp_hmac<M: hmac::Mac + hmac::digest::KeyInit>(
     mac.finalize().into_bytes().to_vec()
 }
 
+fn display_custom_field(
+    field: &DecryptedField,
+    clipboard: crate::clipboard::Mode,
+    secrets: &Secrets,
+) -> bool {
+    let name = field.name.as_deref().unwrap_or("(null)");
+    let value = field.value.as_deref().unwrap_or("");
+    if matches!(secrets, Secrets::Hide { .. })
+        && field.ty == Some(rbw::api::FieldType::Hidden)
+    {
+        secrets.display_hint(
+            name,
+            Some(value),
+            "get",
+            &format!(" -f {}", shell_quote(name)),
+        )
+    } else {
+        display_field(name, Some(value), clipboard)
+    }
+}
+
 fn display_field(
     name: &str,
     field: Option<&str>,
@@ -2870,6 +3032,16 @@ fn display_field(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_shell_quote() {
+        assert_eq!(shell_quote("github"), "github");
+        assert_eq!(shell_quote("https://x.org/a"), "https://x.org/a");
+        assert_eq!(shell_quote("foo bar"), "'foo bar'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+        assert_eq!(shell_quote(""), "''");
+    }
 
     #[test]
     fn test_find_entry() {
