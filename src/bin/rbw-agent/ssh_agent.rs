@@ -176,14 +176,11 @@ fn sign_response(
 
                 ("rsa-sha2-256", signature.to_bytes())
             } else {
-                let signing_key =
-                    rsa::pkcs1v15::SigningKey::<sha1::Sha1>::new_unprefixed(
-                        rsa_key,
-                    );
-                let signature =
-                    signing_key.try_sign_with_rng(&mut rng, data)?;
-
-                ("ssh-rsa", signature.to_bytes())
+                // ssh-key can't represent ssh-rsa (sha1) signatures, and
+                // openssh hasn't requested them by default since 8.8
+                return Err(anyhow::anyhow!(
+                    "ssh-rsa (sha1) signatures are not supported"
+                ));
             };
 
             ssh_key::Signature::new(
@@ -286,6 +283,12 @@ uI84nnmtGKwgUQnBAAAAAAEC\n\
             assert_eq!(String::decode(&mut body).unwrap(), "");
         }
         assert!(body.is_empty());
+    }
+
+    #[test]
+    fn sign_rsa_sha1_unsupported() {
+        let key = ssh_key::PrivateKey::from_openssh(RSA_PRIVATE).unwrap();
+        assert!(sign_response(&key, DATA, 0).is_err());
     }
 
     #[test]
