@@ -711,38 +711,6 @@ pub async fn encrypt(
     Ok(())
 }
 
-#[cfg(feature = "clipboard")]
-pub async fn clipboard_store(
-    sock: &mut crate::sock::Sock,
-    state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
-    text: &str,
-) -> anyhow::Result<()> {
-    let mut state = state.lock().await;
-    if let Some(clipboard) = &mut state.clipboard {
-        clipboard.set_text(text).map_err(|e| {
-            anyhow::anyhow!("couldn't store value to clipboard: {e}")
-        })?;
-    }
-
-    respond_ack(sock).await?;
-
-    Ok(())
-}
-
-#[cfg(not(feature = "clipboard"))]
-pub async fn clipboard_store(
-    sock: &mut crate::sock::Sock,
-    _state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
-    _text: &str,
-) -> anyhow::Result<()> {
-    sock.send(&rbw::protocol::Response::Error {
-        error: "clipboard not supported".to_string(),
-    })
-    .await?;
-
-    Ok(())
-}
-
 pub async fn version(sock: &mut crate::sock::Sock) -> anyhow::Result<()> {
     sock.send(&rbw::protocol::Response::Version {
         version: rbw::protocol::VERSION,

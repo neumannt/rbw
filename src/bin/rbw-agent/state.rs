@@ -23,9 +23,6 @@ pub struct State {
     // we should not use this for any requests on the main agent, those
     // should all send their own environment over.
     pub last_environment: rbw::protocol::Environment,
-
-    #[cfg(feature = "clipboard")]
-    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl State {

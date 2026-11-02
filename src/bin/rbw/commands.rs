@@ -348,7 +348,11 @@ struct DecryptedCipher {
 }
 
 impl DecryptedCipher {
-    fn display_short(&self, desc: &str, clipboard: bool) -> bool {
+    fn display_short(
+        &self,
+        desc: &str,
+        clipboard: crate::clipboard::Mode,
+    ) -> bool {
         match &self.data {
             DecryptedData::Login { password, .. } => {
                 password.as_ref().map_or_else(
@@ -408,7 +412,12 @@ impl DecryptedCipher {
         }
     }
 
-    fn display_field(&self, desc: &str, field: &str, clipboard: bool) {
+    fn display_field(
+        &self,
+        desc: &str,
+        field: &str,
+        clipboard: crate::clipboard::Mode,
+    ) {
         let field = field.to_lowercase();
         let field = field.as_str();
         match &self.data {
@@ -688,7 +697,7 @@ impl DecryptedCipher {
         }
     }
 
-    fn display_long(&self, desc: &str, clipboard: bool) {
+    fn display_long(&self, desc: &str, clipboard: crate::clipboard::Mode) {
         match &self.data {
             DecryptedData::Login {
                 username,
@@ -1003,18 +1012,21 @@ impl DecryptedCipher {
     }
 }
 
-fn val_display_or_store(clipboard: bool, password: &str) -> bool {
-    if clipboard {
-        match clipboard_store(password) {
+fn val_display_or_store(
+    clipboard: crate::clipboard::Mode,
+    password: &str,
+) -> bool {
+    if clipboard == crate::clipboard::Mode::Off {
+        println!("{password}");
+        true
+    } else {
+        match crate::clipboard::store(password, clipboard) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("{e}");
                 false
             }
         }
-    } else {
-        println!("{password}");
-        true
     }
 }
 
@@ -1312,13 +1324,6 @@ pub fn config_unset(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn clipboard_store(val: &str) -> anyhow::Result<()> {
-    ensure_agent()?;
-    crate::actions::clipboard_store(val)?;
-
-    Ok(())
-}
-
 pub fn register() -> anyhow::Result<()> {
     ensure_agent()?;
     crate::actions::register()?;
@@ -1391,7 +1396,7 @@ pub fn get(
     field: Option<&str>,
     full: bool,
     raw: bool,
-    clipboard: bool,
+    clipboard: crate::clipboard::Mode,
     ignore_case: bool,
     list_fields: bool,
 ) -> anyhow::Result<()> {
@@ -1523,7 +1528,7 @@ pub fn code(
     needle: Needle,
     user: Option<&str>,
     folder: Option<&str>,
-    clipboard: bool,
+    clipboard: crate::clipboard::Mode,
     ignore_case: bool,
 ) -> anyhow::Result<()> {
     unlock()?;
@@ -2804,7 +2809,11 @@ fn generate_totp(secret: &str) -> anyhow::Result<String> {
     }
 }
 
-fn display_field(name: &str, field: Option<&str>, clipboard: bool) -> bool {
+fn display_field(
+    name: &str,
+    field: Option<&str>,
+    clipboard: crate::clipboard::Mode,
+) -> bool {
     field.map_or_else(
         || false,
         |field| val_display_or_store(clipboard, &format!("{name}: {field}")),

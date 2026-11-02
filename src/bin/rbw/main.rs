@@ -4,6 +4,7 @@ use anyhow::Context as _;
 use clap::{CommandFactory as _, Parser as _};
 
 mod actions;
+mod clipboard;
 mod commands;
 mod sock;
 
@@ -17,6 +18,40 @@ struct FindArgs {
     folder: Option<String>,
     #[arg(short, long, help = "Ignore case")]
     ignorecase: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct ClipboardArgs {
+    #[cfg(feature = "clipboard")]
+    #[arg(long, help = "Copy result to clipboard")]
+    clipboard: bool,
+    #[cfg(feature = "clipboard")]
+    #[arg(
+        long,
+        requires = "clipboard",
+        help = "With --clipboard, if no clipboard tool is available, \
+            have the terminal set the clipboard instead",
+        long_help = "With --clipboard, if no clipboard tool is \
+            available (for instance, over ssh), have the terminal set \
+            the clipboard instead, using the OSC 52 escape sequence. \
+            This requires a terminal which supports OSC 52. Note that \
+            terminal multiplexers and session recorders may keep a copy \
+            of the value."
+    )]
+    osc52: bool,
+}
+
+impl ClipboardArgs {
+    #[cfg(feature = "clipboard")]
+    fn mode(&self) -> clipboard::Mode {
+        clipboard::Mode::new(self.clipboard, self.osc52)
+    }
+
+    #[cfg(not(feature = "clipboard"))]
+    #[allow(clippy::unused_self)]
+    fn mode(&self) -> clipboard::Mode {
+        clipboard::Mode::Off
+    }
 }
 
 #[derive(Debug, clap::Parser)]
@@ -70,6 +105,10 @@ enum Opt {
     },
 
     #[command(about = "Display the password for a given entry")]
+    #[cfg_attr(
+        feature = "clipboard",
+        command(mut_arg("clipboard", |arg| arg.short('c')))
+    )]
     Get {
         #[command(flatten)]
         find_args: FindArgs,
@@ -79,9 +118,8 @@ enum Opt {
         full: bool,
         #[structopt(long, help = "Display output as JSON")]
         raw: bool,
-        #[cfg(feature = "clipboard")]
-        #[structopt(short, long, help = "Copy result to clipboard")]
-        clipboard: bool,
+        #[command(flatten)]
+        clipboard_args: ClipboardArgs,
         #[structopt(short, long, help = "List fields in this entry")]
         list_fields: bool,
     },
@@ -112,9 +150,8 @@ enum Opt {
     Code {
         #[command(flatten)]
         find_args: FindArgs,
-        #[cfg(feature = "clipboard")]
-        #[structopt(long, help = "Copy result to clipboard")]
-        clipboard: bool,
+        #[command(flatten)]
+        clipboard_args: ClipboardArgs,
     },
 
     #[command(
@@ -343,8 +380,7 @@ fn main() {
             field,
             full,
             raw,
-            #[cfg(feature = "clipboard")]
-            clipboard,
+            clipboard_args,
             list_fields,
         } => commands::get(
             find_args.needle.clone(),
@@ -353,10 +389,7 @@ fn main() {
             field.as_deref(),
             full,
             raw,
-            #[cfg(feature = "clipboard")]
-            clipboard,
-            #[cfg(not(feature = "clipboard"))]
-            false,
+            clipboard_args.mode(),
             find_args.ignorecase,
             list_fields,
         ),
@@ -368,16 +401,12 @@ fn main() {
         } => commands::search(&term, &fields, folder.as_deref(), raw),
         Opt::Code {
             find_args,
-            #[cfg(feature = "clipboard")]
-            clipboard,
+            clipboard_args,
         } => commands::code(
             find_args.needle,
             find_args.user.as_deref(),
             find_args.folder.as_deref(),
-            #[cfg(feature = "clipboard")]
-            clipboard,
-            #[cfg(not(feature = "clipboard"))]
-            false,
+            clipboard_args.mode(),
             find_args.ignorecase,
         ),
         Opt::Add {

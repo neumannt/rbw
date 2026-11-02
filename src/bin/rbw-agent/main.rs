@@ -42,12 +42,6 @@ async fn tokio_main(
             master_password_reprompt: std::collections::HashSet::new(),
             master_password_reprompt_initialized: false,
             last_environment: rbw::protocol::Environment::default(),
-            #[cfg(feature = "clipboard")]
-            clipboard: arboard::Clipboard::new()
-                .inspect_err(|e| {
-                    log::warn!("couldn't create clipboard context: {e}");
-                })
-                .ok(),
         }));
 
     let agent =
