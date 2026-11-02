@@ -8,23 +8,23 @@ all: build
 .PHONY: all
 
 build:
-	@cargo build --all-targets --target x86_64-unknown-linux-musl
+	@cargo build --locked --all-targets --target x86_64-unknown-linux-musl
 .PHONY: build
 
 release:
-	@cargo build --release --all-targets --target x86_64-unknown-linux-musl
+	@cargo build --locked --release --all-targets --target x86_64-unknown-linux-musl
 .PHONY: release
 
 test:
-	@RUST_BACKTRACE=1 cargo test --target x86_64-unknown-linux-musl
+	@RUST_BACKTRACE=1 cargo test --locked --target x86_64-unknown-linux-musl
 .PHONY: test
 
 check:
-	@cargo check --all-targets --target x86_64-unknown-linux-musl
+	@cargo check --locked --all-targets --target x86_64-unknown-linux-musl
 .PHONY: check
 
 doc:
-	@cargo doc --workspace
+	@cargo doc --locked --workspace
 .PHONY: doc
 
 clean:
