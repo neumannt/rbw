@@ -72,27 +72,41 @@ pub fn ssh_agent_socket_file() -> std::path::PathBuf {
 }
 
 fn config_dir() -> std::path::PathBuf {
-    let project_dirs =
-        directories::ProjectDirs::from("", "", &profile()).unwrap();
-    project_dirs.config_dir().to_path_buf()
+    if cfg!(target_os = "macos") {
+        home_dir().join("Library/Application Support")
+    } else {
+        xdg_dir("XDG_CONFIG_HOME")
+            .unwrap_or_else(|| home_dir().join(".config"))
+    }
+    .join(project_dir_name())
 }
 
 fn cache_dir() -> std::path::PathBuf {
-    let project_dirs =
-        directories::ProjectDirs::from("", "", &profile()).unwrap();
-    project_dirs.cache_dir().to_path_buf()
+    if cfg!(target_os = "macos") {
+        home_dir().join("Library/Caches")
+    } else {
+        xdg_dir("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"))
+    }
+    .join(project_dir_name())
 }
 
 fn data_dir() -> std::path::PathBuf {
-    let project_dirs =
-        directories::ProjectDirs::from("", "", &profile()).unwrap();
-    project_dirs.data_dir().to_path_buf()
+    if cfg!(target_os = "macos") {
+        home_dir().join("Library/Application Support")
+    } else {
+        xdg_dir("XDG_DATA_HOME")
+            .unwrap_or_else(|| home_dir().join(".local/share"))
+    }
+    .join(project_dir_name())
 }
 
 fn runtime_dir() -> std::path::PathBuf {
-    let project_dirs =
-        directories::ProjectDirs::from("", "", &profile()).unwrap();
-    project_dirs.runtime_dir().map_or_else(
+    let runtime_dir = if cfg!(target_os = "macos") {
+        None
+    } else {
+        xdg_dir("XDG_RUNTIME_DIR")
+    };
+    runtime_dir.map_or_else(
         || {
             format!(
                 "{}/{}-{}",
@@ -102,8 +116,39 @@ fn runtime_dir() -> std::path::PathBuf {
             )
             .into()
         },
-        std::path::Path::to_path_buf,
+        |dir| dir.join(project_dir_name()),
     )
+}
+
+// these match the paths previously chosen by the directories crate
+
+fn project_dir_name() -> String {
+    let profile = profile();
+    if cfg!(target_os = "macos") {
+        profile.replace(' ', "-")
+    } else {
+        profile.split_whitespace().map(str::to_lowercase).collect()
+    }
+}
+
+// the xdg base directory spec says to ignore relative paths
+fn xdg_dir(var: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(var)
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+}
+
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            // falls back to the passwd database, since HOME is unset
+            #[allow(deprecated)]
+            std::env::home_dir()
+        })
+        .filter(|home| !home.as_os_str().is_empty())
+        .expect("couldn't determine home directory")
 }
 
 pub fn profile() -> String {
