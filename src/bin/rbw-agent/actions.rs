@@ -887,16 +887,14 @@ pub async fn get_ssh_public_keys(
 
 pub async fn find_ssh_private_key(
     state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
-    request_public_key: ssh_agent_lib::ssh_key::PublicKey,
-) -> anyhow::Result<ssh_agent_lib::ssh_key::PrivateKey> {
+    request_key_blob: &[u8],
+) -> anyhow::Result<ssh_key::PrivateKey> {
     let environment = {
         let state = state.lock().await;
         state.set_timeout();
         state.last_environment().clone()
     };
     unlock_state(state.clone(), &environment).await?;
-
-    let request_bytes = request_public_key.to_bytes();
 
     let db = load_db().await?;
 
@@ -918,14 +916,15 @@ pub async fn find_ssh_private_key(
                 entry.org_id.as_deref(),
             )
             .await?;
-            let public_key_bytes =
-                ssh_agent_lib::ssh_key::PublicKey::from_openssh(
-                    &public_key_plaintext,
-                )
-                .map_err(anyhow::Error::new)?
-                .to_bytes();
+            // keys of unsupported types can't match any key we offered
+            let Ok(public_key_bytes) =
+                ssh_key::PublicKey::from_openssh(&public_key_plaintext)
+                    .and_then(|pk| pk.to_bytes())
+            else {
+                continue;
+            };
 
-            if public_key_bytes == request_bytes {
+            if public_key_bytes == request_key_blob {
                 let private_key_enc =
                     private_key.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("Matching entry has no private key")
@@ -940,7 +939,7 @@ pub async fn find_ssh_private_key(
                 )
                 .await?;
 
-                return ssh_agent_lib::ssh_key::PrivateKey::from_openssh(
+                return ssh_key::PrivateKey::from_openssh(
                     private_key_plaintext,
                 )
                 .map_err(anyhow::Error::new);

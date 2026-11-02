@@ -115,17 +115,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
-name = "async-trait"
-version = "0.1.89"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -257,12 +246,6 @@ name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
-
-[[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -1729,7 +1712,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.17",
+ "thiserror",
  "tokio",
  "tracing",
  "web-time",
@@ -1750,7 +1733,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.17",
+ "thiserror",
  "tinyvec",
  "tracing",
  "web-time",
@@ -1845,15 +1828,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "raunch"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a67226789ccd419c55f5c826e04f7d58690b0593364f61bc8ed6e7dbbab49c5"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "rbw"
 version = "1.15.0"
 dependencies = [
@@ -1902,11 +1876,12 @@ dependencies = [
  "sha1",
  "sha2",
  "signature",
- "ssh-agent-lib",
+ "ssh-encoding",
+ "ssh-key",
  "tempfile",
  "terminal_size",
  "textwrap",
- "thiserror 2.0.17",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
@@ -1934,7 +1909,7 @@ checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
 dependencies = [
  "getrandom 0.2.16",
  "libredox",
- "thiserror 2.0.17",
+ "thiserror",
 ]
 
 [[package]]
@@ -2198,15 +2173,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "secrecy"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
-dependencies = [
- "zeroize",
-]
-
-[[package]]
 name = "security-framework"
 version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2313,15 +2279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "service-binding"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25663b9d8b83193ef83183edb3fd01e5447adb3e5baa35466ff9a6cd2408d6e8"
-dependencies = [
- "raunch",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2411,27 +2368,6 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
-]
-
-[[package]]
-name = "ssh-agent-lib"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf67cca8055cc41de60ac7344a98b9c8f9e2a9ee9b1adf3e142b78ec1e7abba"
-dependencies = [
- "async-trait",
- "byteorder",
- "futures",
- "log",
- "secrecy",
- "service-binding",
- "signature",
- "ssh-encoding",
- "ssh-key",
- "subtle",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -2562,31 +2498,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
 dependencies = [
- "thiserror-impl 2.0.17",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2688,19 +2604,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tungstenite",
-]
-
-[[package]]
-name = "tokio-util"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2efa149fe76073d6e8fd97ef4f4eca7b67f599660115591483572e406e165594"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "pin-project-lite",
- "tokio",
 ]
 
 [[package]]
@@ -2815,7 +2718,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "sha1",
- "thiserror 2.0.17",
+ "thiserror",
  "url",
  "utf-8",
 ]
@@ -3253,7 +3156,7 @@ dependencies = [
  "log",
  "os_pipe",
  "rustix",
- "thiserror 2.0.17",
+ "thiserror",
  "tree_magic_mini",
  "wayland-backend",
  "wayland-client",
