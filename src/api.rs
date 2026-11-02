@@ -1708,10 +1708,24 @@ async fn handle_sso_connection(
         return None;
     }
 
-    let params = url::form_urlencoded::parse(query.as_bytes())
-        .into_owned()
-        .collect();
-    let res = sso_query_code(&params, &state);
+    let params: std::collections::HashMap<String, String> =
+        url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+    // anything local can connect to the callback server, so ignore requests
+    // without the state we sent instead of failing the login
+    let received_state = params
+        .get("state")
+        .and_then(|s| s.split("_identifier=").next());
+    if received_state != Some(&*state) {
+        let _ = write_http_response(&mut stream, "400 Bad Request", "").await;
+        return None;
+    }
+    let res = params.get("code").cloned().ok_or_else(|| {
+        Error::FailedToProcessSSOCallback {
+            msg: "Could not obtain code from the URL".to_string(),
+        }
+    });
     let (status, body) = if res.is_ok() {
         (
             "200 OK",
@@ -1785,33 +1799,6 @@ async fn write_http_response(
     stream.shutdown().await
 }
 
-fn sso_query_code(
-    params: &std::collections::HashMap<String, String>,
-    state: &str,
-) -> Result<String> {
-    let sso_code =
-        params
-            .get("code")
-            .ok_or(Error::FailedToProcessSSOCallback {
-                msg: "Could not obtain code from the URL".to_string(),
-            })?;
-
-    let received_state =
-        params
-            .get("state")
-            .ok_or(Error::FailedToProcessSSOCallback {
-                msg: "Could not obtain state from the URL".to_string(),
-            })?;
-
-    if received_state.split("_identifier=").next().unwrap() != state {
-        return Err(Error::FailedToProcessSSOCallback {
-            msg: format!("SSO callback states do not match, sent: {state}, received: {received_state}"),
-        });
-    }
-
-    Ok(sso_code.clone())
-}
-
 fn classify_login_error(error_res: &ConnectErrorRes, code: u16) -> Error {
     let error_desc = error_res.error_description.clone();
     let error_desc = error_desc.as_deref();
@@ -1870,4 +1857,50 @@ fn classify_login_error(error_res: &ConnectErrorRes, code: u16) -> Error {
 
     log::warn!("unexpected error received during login: {error_res:?}");
     Error::RequestFailed { status: code }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_sso_callback_server() {
+        async fn request(port: u16, target: &str) -> String {
+            let mut stream =
+                tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .unwrap();
+            stream
+                .write_all(
+                    format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut res = String::new();
+            stream.read_to_string(&mut res).await.unwrap();
+            res
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            start_sso_callback_server(listener, "abc").await
+        });
+
+        // requests without the right state don't end the login
+        assert!(request(port, "/").await.starts_with("HTTP/1.1 400"));
+        assert!(request(port, "/?code=x&state=wrong")
+            .await
+            .starts_with("HTTP/1.1 400"));
+        assert!(request(port, "/foo").await.starts_with("HTTP/1.1 404"));
+        assert!(!server.is_finished());
+
+        assert!(request(port, "/?code=xyz&state=abc_identifier=foo")
+            .await
+            .starts_with("HTTP/1.1 200"));
+        assert_eq!(server.await.unwrap().unwrap(), "xyz");
+    }
 }
