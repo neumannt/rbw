@@ -76,7 +76,16 @@ tokio-tungstenite = { version = "0.28", features = [
     "rustls-tls-native-roots",
     "url",
 ] }
-tokio = { version = "1.48.0", features = ["full"] }
+tokio = { version = "1.48.0", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 url = "2.5.7"
 zeroize = "1.8.2"
 
