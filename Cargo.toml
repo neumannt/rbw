@@ -17,7 +17,6 @@ include = ["src/**/*", "bin/**/*", "LICENSE", "README.md", "CHANGELOG.md"]
 aes = "0.8.4"
 anyhow = "1.0.100"
 argon2 = "0.5.3"
-arrayvec = "0.7.6"
 base64 = "0.22.1"
 block-padding = "0.3.3"
 cbc = { version = "0.1.2", features = ["alloc", "std"] }

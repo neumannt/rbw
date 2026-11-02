@@ -6,19 +6,18 @@ static REGION_LOCK_WORKS: std::sync::OnceLock<bool> =
     std::sync::OnceLock::new();
 
 pub struct Vec {
-    data: Box<arrayvec::ArrayVec<u8, LEN>>,
+    data: Box<[u8; LEN]>,
+    len: usize,
     _lock: Option<MemoryLock>,
 }
 
 impl Default for Vec {
     fn default() -> Self {
-        let data = Box::new(arrayvec::ArrayVec::<_, LEN>::new());
+        let data = Box::new([0; LEN]);
         let lock = match REGION_LOCK_WORKS.get() {
-            Some(true) => {
-                Some(MemoryLock::new(data.as_ptr(), data.capacity()).unwrap())
-            }
+            Some(true) => Some(MemoryLock::new(data.as_ptr(), LEN).unwrap()),
             Some(false) => None,
-            None => match MemoryLock::new(data.as_ptr(), data.capacity()) {
+            None => match MemoryLock::new(data.as_ptr(), LEN) {
                 Ok(lock) => {
                     let _ = REGION_LOCK_WORKS.set(true);
                     Some(lock)
@@ -31,7 +30,11 @@ impl Default for Vec {
                 }
             },
         };
-        Self { data, _lock: lock }
+        Self {
+            data,
+            len: 0,
+            _lock: lock,
+        }
     }
 }
 
@@ -74,31 +77,35 @@ impl Vec {
     }
 
     pub fn data(&self) -> &[u8] {
-        self.data.as_slice()
+        &self.data[..self.len]
     }
 
     pub fn data_mut(&mut self) -> &mut [u8] {
-        self.data.as_mut_slice()
+        &mut self.data[..self.len]
     }
 
+    // zeroes the whole buffer, and extends the length to cover all of it
     pub fn zero(&mut self) {
-        self.truncate(0);
-        self.data.extend(std::iter::repeat_n(0, LEN));
+        self.data.zeroize();
+        self.len = LEN;
     }
 
     pub fn extend(&mut self, it: impl Iterator<Item = u8>) {
-        self.data.extend(it);
+        for byte in it {
+            assert!(self.len < LEN, "locked::Vec capacity exceeded");
+            self.data[self.len] = byte;
+            self.len += 1;
+        }
     }
 
     pub fn truncate(&mut self, len: usize) {
-        self.data.truncate(len);
+        self.len = self.len.min(len);
     }
 }
 
 impl Drop for Vec {
     fn drop(&mut self) {
-        self.zero();
-        self.data.as_mut().zeroize();
+        self.data.zeroize();
     }
 }
 
@@ -194,5 +201,40 @@ impl ApiKey {
 
     pub fn client_secret(&self) -> &[u8] {
         self.client_secret.password()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_vec() {
+        let mut vec = Vec::new();
+        assert_eq!(vec.data(), b"");
+        vec.extend(b"secret".iter().copied());
+        assert_eq!(vec.data(), b"secret");
+        vec.truncate(3);
+        assert_eq!(vec.data(), b"sec");
+        vec.truncate(10);
+        assert_eq!(vec.data(), b"sec");
+        assert_eq!(vec.clone().data(), b"sec");
+
+        // the pattern used when reading into the buffer
+        vec.zero();
+        assert_eq!(vec.data(), &[0; LEN][..]);
+        vec.data_mut()[..4].copy_from_slice(b"read");
+        vec.truncate(4);
+        assert_eq!(vec.data(), b"read");
+
+        vec.extend(std::iter::repeat_n(b'x', LEN - 4));
+        assert_eq!(vec.data().len(), LEN);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity exceeded")]
+    fn test_vec_overflow() {
+        let mut vec = Vec::new();
+        vec.extend(std::iter::repeat_n(0, LEN + 1));
     }
 }

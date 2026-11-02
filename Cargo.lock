@@ -91,12 +91,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,7 +1289,6 @@ dependencies = [
  "aes",
  "anyhow",
  "argon2",
- "arrayvec",
  "base64",
  "block-padding",
  "cbc",
