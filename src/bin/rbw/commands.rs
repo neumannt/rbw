@@ -2694,18 +2694,29 @@ struct TotpParams {
 
 fn decode_totp_secret(secret: &str) -> anyhow::Result<Vec<u8>> {
     let secret = secret.trim().replace(' ', "");
-    let alphabets = [
-        base32::Alphabet::Rfc4648 { padding: false },
-        base32::Alphabet::Rfc4648 { padding: true },
-        base32::Alphabet::Rfc4648Lower { padding: false },
-        base32::Alphabet::Rfc4648Lower { padding: true },
-    ];
-    for alphabet in alphabets {
-        if let Some(secret) = base32::decode(alphabet, &secret) {
-            return Ok(secret);
+    decode_base32(&secret)
+        .ok_or_else(|| anyhow::anyhow!("totp secret was not valid base32"))
+}
+
+// rfc 4648 base32, case insensitive, with optional padding
+fn decode_base32(s: &str) -> Option<Vec<u8>> {
+    let mut decoded = vec![];
+    let mut buf = 0u16;
+    let mut bits = 0;
+    for c in s.trim_end_matches('=').bytes() {
+        let value = match c.to_ascii_uppercase() {
+            c @ b'A'..=b'Z' => c - b'A',
+            c @ b'2'..=b'7' => c - b'2' + 26,
+            _ => return None,
+        };
+        buf = (buf << 5) | u16::from(value);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            decoded.push((buf >> bits).to_be_bytes()[1]);
         }
     }
-    Err(anyhow::anyhow!("totp secret was not valid base32"))
+    Some(decoded)
 }
 
 fn parse_totp_secret(secret: &str) -> anyhow::Result<TotpParams> {
@@ -2742,6 +2753,13 @@ fn parse_totp_secret(secret: &str) -> anyhow::Result<TotpParams> {
                     }
                     None => TOTP_DEFAULT_STEP,
                 };
+                // steam codes always have the same length and period,
+                // regardless of what the url says
+                let (digits, period) = if algorithm == "STEAM" {
+                    (5, TOTP_DEFAULT_STEP)
+                } else {
+                    (digits, period)
+                };
 
                 Ok(TotpParams {
                     secret,
@@ -2774,39 +2792,73 @@ fn parse_totp_secret(secret: &str) -> anyhow::Result<TotpParams> {
     }
 }
 
-// This function exists for the sake of making the generate_totp function less
-// densely packed and more readable
-fn generate_totp_algorithm_type(
-    alg: &str,
-) -> anyhow::Result<totp_rs::Algorithm> {
-    match alg {
-        "SHA1" => Ok(totp_rs::Algorithm::SHA1),
-        "SHA256" => Ok(totp_rs::Algorithm::SHA256),
-        "SHA512" => Ok(totp_rs::Algorithm::SHA512),
-        "STEAM" => Ok(totp_rs::Algorithm::Steam),
-        _ => Err(anyhow::anyhow!(format!("{alg} is not a valid algorithm"))),
+fn generate_totp(secret: &str) -> anyhow::Result<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    totp_code(&parse_totp_secret(secret)?, now)
+}
+
+// rfc 6238, plus the steam variant
+fn totp_code(params: &TotpParams, time: u64) -> anyhow::Result<String> {
+    const STEAM_CHARS: &[u8] = b"23456789BCDFGHJKMNPQRTVWXY";
+
+    if params.period == 0 {
+        return Err(anyhow::anyhow!("totp period must be greater than zero"));
+    }
+    let counter = (time / params.period).to_be_bytes();
+    let hash = match params.algorithm.as_str() {
+        "SHA1" | "STEAM" => {
+            totp_hmac::<hmac::Hmac<sha1::Sha1>>(&params.secret, &counter)
+        }
+        "SHA256" => {
+            totp_hmac::<hmac::Hmac<sha2::Sha256>>(&params.secret, &counter)
+        }
+        "SHA512" => {
+            totp_hmac::<hmac::Hmac<sha2::Sha512>>(&params.secret, &counter)
+        }
+        alg => {
+            return Err(anyhow::anyhow!(
+                "{alg} is not a valid totp algorithm"
+            ))
+        }
+    };
+
+    // dynamic truncation, rfc 4226 section 5.3
+    let offset = usize::from(hash[hash.len() - 1] & 0xf);
+    let mut code =
+        u32::from_be_bytes(hash[offset..offset + 4].try_into().unwrap())
+            & 0x7fff_ffff;
+
+    if params.algorithm == "STEAM" {
+        let base = u32::try_from(STEAM_CHARS.len()).unwrap();
+        Ok((0..params.digits)
+            .map(|_| {
+                let c = STEAM_CHARS[usize::try_from(code % base).unwrap()];
+                code /= base;
+                char::from(c)
+            })
+            .collect())
+    } else {
+        let modulus = u32::try_from(params.digits)
+            .ok()
+            .filter(|digits| (1..=9).contains(digits))
+            .map(|digits| 10u32.pow(digits))
+            .ok_or_else(|| {
+                anyhow::anyhow!("totp digits must be between 1 and 9")
+            })?;
+        Ok(format!("{:0width$}", code % modulus, width = params.digits))
     }
 }
 
-fn generate_totp(secret: &str) -> anyhow::Result<String> {
-    let totp_params = parse_totp_secret(secret)?;
-    let alg = totp_params.algorithm.as_str();
-
-    match alg {
-        "SHA1" | "SHA256" | "SHA512" => Ok(totp_rs::TOTP::new_unchecked(
-            generate_totp_algorithm_type(alg)?,
-            totp_params.digits,
-            1, // the library docs say this should be a 1
-            totp_params.period,
-            totp_params.secret,
-        )
-        .generate_current()?),
-        "STEAM" => Ok(totp_rs::TOTP::new_steam(totp_params.secret)
-            .generate_current()?),
-        _ => Err(anyhow::anyhow!(format!(
-            "{alg} is not a valid totp algorithm"
-        ))),
-    }
+fn totp_hmac<M: hmac::Mac + hmac::digest::KeyInit>(
+    key: &[u8],
+    data: &[u8],
+) -> Vec<u8> {
+    // unwrap is safe because hmac accepts keys of any length
+    let mut mac = <M as hmac::Mac>::new_from_slice(key).unwrap();
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
 }
 
 fn display_field(
@@ -4183,5 +4235,75 @@ mod test {
                 notes: None,
             },
         )
+    }
+    #[test]
+    fn test_totp() {
+        // test vectors from rfc 6238 appendix b
+        let secrets = [
+            ("SHA1", &b"12345678901234567890"[..]),
+            ("SHA256", &b"12345678901234567890123456789012"[..]),
+            (
+                "SHA512",
+                &b"1234567890123456789012345678901234567890123456789012345678901234"[..],
+            ),
+        ];
+        let vectors: &[(u64, [&str; 3])] = &[
+            (59, ["94287082", "46119246", "90693936"]),
+            (1_111_111_109, ["07081804", "68084774", "25091201"]),
+            (1_111_111_111, ["14050471", "67062674", "99943326"]),
+            (1_234_567_890, ["89005924", "91819424", "93441116"]),
+            (2_000_000_000, ["69279037", "90698825", "38618901"]),
+            (20_000_000_000, ["65353130", "77737706", "47863826"]),
+        ];
+        for (time, codes) in vectors {
+            for ((algorithm, secret), code) in secrets.iter().zip(codes) {
+                let params = TotpParams {
+                    secret: secret.to_vec(),
+                    algorithm: (*algorithm).to_string(),
+                    digits: 8,
+                    period: 30,
+                };
+                assert_eq!(totp_code(&params, *time).unwrap(), *code);
+            }
+        }
+
+        let params = TotpParams {
+            secret: b"12345678901234567890".to_vec(),
+            algorithm: "STEAM".to_string(),
+            digits: 5,
+            period: 30,
+        };
+        assert_eq!(totp_code(&params, 1_111_111_109).unwrap(), "PY4YB");
+
+        let params = parse_totp_secret(
+            "otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=STEAM",
+        )
+        .unwrap();
+        assert_eq!(params.digits, 5);
+        assert_eq!(params.period, 30);
+        assert_eq!(totp_code(&params, 1_111_111_109).unwrap(), "PY4YB");
+
+        let mut params = TotpParams {
+            secret: vec![],
+            algorithm: "SHA1".to_string(),
+            digits: 10,
+            period: 30,
+        };
+        assert!(totp_code(&params, 0).is_err());
+        params.digits = 6;
+        params.period = 0;
+        assert!(totp_code(&params, 0).is_err());
+    }
+
+    #[test]
+    fn test_decode_base32() {
+        assert_eq!(decode_base32("").unwrap(), b"");
+        assert_eq!(decode_base32("MY======").unwrap(), b"f");
+        assert_eq!(decode_base32("MZXW6YQ=").unwrap(), b"foob");
+        assert_eq!(decode_base32("MZXW6YTBOI").unwrap(), b"foobar");
+        assert_eq!(decode_base32("mzxw6ytboi======").unwrap(), b"foobar");
+        assert_eq!(decode_base32("MzXw6yTbOi").unwrap(), b"foobar");
+        assert!(decode_base32("MZXW6YTBO1").is_none());
+        assert!(decode_base32("MZ=W6YTBOI").is_none());
     }
 }
