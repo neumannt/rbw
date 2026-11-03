@@ -25,7 +25,13 @@ pub fn store(text: &str, mode: Mode) -> anyhow::Result<()> {
     let mut last_err = None;
     for tool in tools() {
         let (program, args) = tool.copy;
-        match run(program, args, text) {
+        let mut res = run(program, args, text);
+        if let (Err(e), Some((program, args))) = (&res, tool.copy_fallback) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                res = run(program, args, text);
+            }
+        }
+        match res {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => last_err = Some(format!("{program} failed: {e}")),
@@ -95,6 +101,8 @@ type Command = (&'static str, &'static [&'static str]);
 #[cfg_attr(not(feature = "clipboard"), allow(dead_code))]
 struct Tool {
     copy: Command,
+    // tried if copy fails, e.g. because the tool is too old for an option
+    copy_fallback: Option<Command>,
     paste: Command,
     // run with empty input
     clear: Command,
@@ -104,6 +112,7 @@ struct Tool {
 fn tools() -> Vec<Tool> {
     vec![Tool {
         copy: ("pbcopy", &[]),
+        copy_fallback: None,
         paste: ("pbpaste", &[]),
         clear: ("pbcopy", &[]),
     }]
@@ -116,7 +125,11 @@ fn tools() -> Vec<Tool> {
     let mut tools = vec![];
     if is_set("WAYLAND_DISPLAY") {
         tools.push(Tool {
-            copy: ("wl-copy", &["--type", "text/plain"]),
+            // --sensitive tells clipboard managers not to keep the value
+            // in their history (with x-kde-passwordManagerHint). older
+            // versions of wl-copy don't have it.
+            copy: ("wl-copy", &["--type", "text/plain", "--sensitive"]),
+            copy_fallback: Some(("wl-copy", &["--type", "text/plain"])),
             paste: ("wl-paste", &["--no-newline", "--type", "text/plain"]),
             clear: ("wl-copy", &["--clear"]),
         });
@@ -124,12 +137,14 @@ fn tools() -> Vec<Tool> {
     if is_set("DISPLAY") {
         tools.push(Tool {
             copy: ("xclip", &["-selection", "clipboard"]),
+            copy_fallback: None,
             paste: ("xclip", &["-selection", "clipboard", "-out"]),
             // xclip can't clear the clipboard, so this copies an empty value
             clear: ("xclip", &["-selection", "clipboard"]),
         });
         tools.push(Tool {
             copy: ("xsel", &["--clipboard", "--input"]),
+            copy_fallback: None,
             paste: ("xsel", &["--clipboard", "--output"]),
             clear: ("xsel", &["--clipboard", "--clear"]),
         });
