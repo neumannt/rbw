@@ -137,7 +137,7 @@ pub async fn sync(
     access_token: &str,
     refresh_token: &str,
 ) -> Result<(
-    Option<String>,
+    Option<RefreshedTokens>,
     (
         String,
         String,
@@ -175,7 +175,7 @@ pub fn add(
     data: &crate::db::EntryData,
     notes: Option<&str>,
     folder_id: Option<&str>,
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<RefreshedTokens>, ())> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
         add_once(access_token, name, data, notes, folder_id)
     })
@@ -204,7 +204,7 @@ pub fn edit(
     notes: Option<&str>,
     folder_uuid: Option<&str>,
     history: &[crate::db::HistoryEntry],
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<RefreshedTokens>, ())> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
         edit_once(
             access_token,
@@ -250,7 +250,7 @@ pub fn remove(
     access_token: &str,
     refresh_token: &str,
     id: &str,
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<RefreshedTokens>, ())> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
         remove_once(access_token, id)
     })
@@ -265,7 +265,7 @@ fn remove_once(access_token: &str, id: &str) -> Result<()> {
 pub fn list_folders(
     access_token: &str,
     refresh_token: &str,
-) -> Result<(Option<String>, Vec<(String, String)>)> {
+) -> Result<(Option<RefreshedTokens>, Vec<(String, String)>)> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
         list_folders_once(access_token)
     })
@@ -280,7 +280,7 @@ pub fn create_folder(
     access_token: &str,
     refresh_token: &str,
     name: &str,
-) -> Result<(Option<String>, String)> {
+) -> Result<(Option<RefreshedTokens>, String)> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
         create_folder_once(access_token, name)
     })
@@ -291,20 +291,37 @@ fn create_folder_once(access_token: &str, name: &str) -> Result<String> {
     client.create_folder(access_token, name)
 }
 
+// the tokens from a successful refresh. refresh_token is None if the server
+// doesn't rotate it, in which case the stored one stays valid
+#[derive(Debug, Clone)]
+pub struct RefreshedTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+}
+
+impl RefreshedTokens {
+    pub fn store(self, db: &mut crate::db::Db) {
+        db.access_token = Some(self.access_token);
+        if let Some(refresh_token) = self.refresh_token {
+            db.refresh_token = Some(refresh_token);
+        }
+    }
+}
+
 fn with_exchange_refresh_token<F, T>(
     access_token: &str,
     refresh_token: &str,
     f: F,
-) -> Result<(Option<String>, T)>
+) -> Result<(Option<RefreshedTokens>, T)>
 where
     F: Fn(&str) -> Result<T>,
 {
     match f(access_token) {
         Ok(t) => Ok((None, t)),
         Err(Error::RequestUnauthorized) => {
-            let access_token = exchange_refresh_token(refresh_token)?;
-            let t = f(&access_token)?;
-            Ok((Some(access_token), t))
+            let tokens = exchange_refresh_token(refresh_token)?;
+            let t = f(&tokens.access_token)?;
+            Ok((Some(tokens), t))
         }
         Err(e) => Err(e),
     }
@@ -314,7 +331,7 @@ async fn with_exchange_refresh_token_async<F, T>(
     access_token: &str,
     refresh_token: &str,
     f: F,
-) -> Result<(Option<String>, T)>
+) -> Result<(Option<RefreshedTokens>, T)>
 where
     F: Fn(
             &str,
@@ -327,23 +344,34 @@ where
     match f(access_token).await {
         Ok(t) => Ok((None, t)),
         Err(Error::RequestUnauthorized) => {
-            let access_token =
-                exchange_refresh_token_async(refresh_token).await?;
-            let t = f(&access_token).await?;
-            Ok((Some(access_token), t))
+            let tokens = exchange_refresh_token_async(refresh_token).await?;
+            let t = f(&tokens.access_token).await?;
+            Ok((Some(tokens), t))
         }
         Err(e) => Err(e),
     }
 }
 
-fn exchange_refresh_token(refresh_token: &str) -> Result<String> {
+fn exchange_refresh_token(refresh_token: &str) -> Result<RefreshedTokens> {
     let (client, _) = api_client()?;
-    client.exchange_refresh_token(refresh_token)
+    let (access_token, refresh_token) =
+        client.exchange_refresh_token(refresh_token)?;
+    Ok(RefreshedTokens {
+        access_token,
+        refresh_token,
+    })
 }
 
-async fn exchange_refresh_token_async(refresh_token: &str) -> Result<String> {
+async fn exchange_refresh_token_async(
+    refresh_token: &str,
+) -> Result<RefreshedTokens> {
     let (client, _) = api_client()?;
-    client.exchange_refresh_token_async(refresh_token).await
+    let (access_token, refresh_token) =
+        client.exchange_refresh_token_async(refresh_token).await?;
+    Ok(RefreshedTokens {
+        access_token,
+        refresh_token,
+    })
 }
 
 fn api_client() -> Result<(crate::api::Client, crate::config::Config)> {
