@@ -758,7 +758,7 @@ impl DecryptedCipher {
                     if displayed {
                         println!();
                     }
-                    println!("{notes}");
+                    println!("{}", for_terminal(notes));
                 }
             }
             DecryptedData::Card {
@@ -780,7 +780,10 @@ impl DecryptedCipher {
                 if let (Some(exp_month), Some(exp_year)) =
                     (exp_month, exp_year)
                 {
-                    println!("Expiration: {exp_month}/{exp_year}");
+                    println!(
+                        "Expiration: {}",
+                        for_terminal(&format!("{exp_month}/{exp_year}"))
+                    );
                     displayed = true;
                 }
                 displayed |= match secrets {
@@ -806,7 +809,7 @@ impl DecryptedCipher {
                     if displayed {
                         println!();
                     }
-                    println!("{notes}");
+                    println!("{}", for_terminal(notes));
                 }
             }
             DecryptedData::Identity {
@@ -866,7 +869,7 @@ impl DecryptedCipher {
                     if displayed {
                         println!();
                     }
-                    println!("{notes}");
+                    println!("{}", for_terminal(notes));
                 }
             }
             DecryptedData::SecureNote => {
@@ -889,7 +892,7 @@ impl DecryptedCipher {
                     if displayed {
                         println!();
                     }
-                    println!("{notes}");
+                    println!("{}", for_terminal(notes));
                 }
             }
         }
@@ -1031,7 +1034,7 @@ impl DecryptedCipher {
         }
         for f in &self.fields {
             if let Some(name) = &f.name {
-                println!("{name}");
+                println!("{}", for_terminal(name));
             }
         }
     }
@@ -1089,8 +1092,12 @@ impl Secrets {
         } else {
             ""
         };
+        // name and extra_args can come from the vault (custom fields)
         println!(
-            "{name}: (hidden, use `rbw {subcommand} {entry_args}{extra_args}{copy}`)"
+            "{}",
+            for_terminal(&format!(
+                "{name}: (hidden, use `rbw {subcommand} {entry_args}{extra_args}{copy}`)"
+            ))
         );
         true
     }
@@ -1108,12 +1115,38 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
+// vault data can contain escape sequences, which a terminal would interpret,
+// and bidi overrides, which make text display differently from what it is,
+// so control characters (other than newlines and tabs) and bidi overrides
+// are replaced when printing to one. other output is left alone, since
+// scripts may rely on it.
+fn for_terminal(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::io::IsTerminal as _;
+
+    if s.chars().any(is_unprintable) && std::io::stdout().is_terminal() {
+        std::borrow::Cow::Owned(strip_unprintable(s))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+fn is_unprintable(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+fn strip_unprintable(s: &str) -> String {
+    s.chars()
+        .map(|c| if is_unprintable(c) { '\u{fffd}' } else { c })
+        .collect()
+}
+
 fn val_display_or_store(
     clipboard: crate::clipboard::Mode,
     password: &str,
 ) -> bool {
     if clipboard == crate::clipboard::Mode::Off {
-        println!("{password}");
+        println!("{}", for_terminal(password));
         true
     } else {
         match crate::clipboard::store(password, clipboard) {
@@ -1569,7 +1602,11 @@ fn print_entry_list(
 
             // write to stdout but don't panic when pipe get's closed
             // this happens when piping stdout in a shell
-            match writeln!(&mut std::io::stdout(), "{}", values.join("\t")) {
+            match writeln!(
+                &mut std::io::stdout(),
+                "{}",
+                for_terminal(&values.join("\t"))
+            ) {
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
                     Ok(())
                 }
@@ -2064,7 +2101,7 @@ pub fn trash() -> anyhow::Result<()> {
             .collect();
     names.sort_unstable();
     for name in names {
-        println!("{name}");
+        println!("{}", for_terminal(&name));
     }
 
     Ok(())
@@ -2126,7 +2163,11 @@ pub fn history(
     let (_, decrypted) = find_entry(&db, name, username, folder, ignore_case)
         .with_context(|| format!("couldn't find entry for '{desc}'"))?;
     for history in decrypted.history {
-        println!("{}: {}", history.last_used_date, history.password);
+        println!(
+            "{}: {}",
+            history.last_used_date,
+            for_terminal(&history.password)
+        );
     }
 
     Ok(())
@@ -2308,9 +2349,13 @@ fn find_entry_raw(
     if matches.is_empty() {
         Err(anyhow::anyhow!("no entry found"))
     } else {
+        // errors end up on the terminal, so the names are always stripped
+        // here, regardless of where stdout goes
         let entries: Vec<String> = matches
             .iter()
-            .map(|(_, decrypted)| decrypted.display_name())
+            .map(|(_, decrypted)| {
+                strip_unprintable(&decrypted.display_name())
+            })
             .collect();
         let entries = entries.join(", ");
         Err(anyhow::anyhow!("multiple entries found: {entries}"))
@@ -3296,6 +3341,15 @@ fn display_field(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_strip_unprintable() {
+        assert_eq!(
+            strip_unprintable("a\x1b[31mb\x07\r\nc\td\u{9b}"),
+            "a\u{fffd}[31mb\u{fffd}\u{fffd}\nc\td\u{fffd}"
+        );
+        assert_eq!(strip_unprintable("a\u{202e}b"), "a\u{fffd}b");
+    }
 
     #[test]
     fn test_batch_decrypt() {
