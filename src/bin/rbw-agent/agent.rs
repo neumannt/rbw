@@ -74,12 +74,18 @@ impl Agent {
                         let res =
                             handle_request(&mut sock, state.clone()).await;
                         if let Err(e) = res {
-                            // unwrap is the only option here
-                            sock.send(&rbw::protocol::Response::Error {
-                                error: format!("{e:#}"),
-                            })
-                            .await
-                            .unwrap();
+                            // the client may have disconnected already, in
+                            // which case there is nobody left to report to
+                            if let Err(e) = sock
+                                .send(&rbw::protocol::Response::Error {
+                                    error: format!("{e:#}"),
+                                })
+                                .await
+                            {
+                                log::warn!(
+                                    "failed to send error response: {e:#}"
+                                );
+                            }
                         }
                     });
                 }
