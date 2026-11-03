@@ -524,9 +524,32 @@ pub async fn sync(
     let (
         tokens,
         (protected_key, protected_private_key, protected_org_keys, entries),
-    ) = rbw::actions::sync(&access_token, &refresh_token)
-        .await
-        .context("failed to sync database from server")?;
+    ) = match rbw::actions::sync(&access_token, &refresh_token).await {
+        Ok(res) => res,
+        // the server will never accept this refresh token again, so
+        // retrying on every sync interval would just repeat the same
+        // rejection. drop the tokens instead, so that the next command goes
+        // through the normal login flow.
+        Err(rbw::error::Error::RefreshTokenInvalid) => {
+            // a concurrent sync may have rotated the token while this
+            // request was in flight, in which case the stored one is still
+            // valid, so only clear the tokens if they are still the ones we
+            // sent
+            let mut current = load_db().await?;
+            if current.refresh_token.as_deref()
+                == Some(refresh_token.as_str())
+            {
+                current.access_token = None;
+                current.refresh_token = None;
+                save_db(&current).await?;
+            }
+            return Err(rbw::error::Error::RefreshTokenInvalid)
+                .context("failed to sync database from server");
+        }
+        Err(e) => {
+            return Err(e).context("failed to sync database from server");
+        }
+    };
     state.lock().await.set_master_password_reprompt(&entries);
     if let Some(tokens) = tokens {
         tokens.store(&mut db);

@@ -1573,6 +1573,12 @@ impl Client {
             .form(&connect_req)
             .send()
             .map_err(|source| Error::Reqwest { source })?;
+        if !res.status().is_success() {
+            return Err(classify_refresh_error(
+                res.status().as_u16(),
+                res.text(),
+            ));
+        }
         let connect_res: ConnectRefreshTokenRes = res.json_with_path()?;
         Ok((connect_res.access_token, connect_res.refresh_token))
     }
@@ -1593,6 +1599,10 @@ impl Client {
             .send()
             .await
             .map_err(|source| Error::Reqwest { source })?;
+        if !res.status().is_success() {
+            let code = res.status().as_u16();
+            return Err(classify_refresh_error(code, res.text().await));
+        }
         let connect_res: ConnectRefreshTokenRes =
             res.json_with_path().await?;
         Ok((connect_res.access_token, connect_res.refresh_token))
@@ -1802,6 +1812,28 @@ async fn write_http_response(
         )
         .await?;
     stream.shutdown().await
+}
+
+// unlike during login, invalid_grant is unambiguous here: no password or
+// second factor is involved, so the server can only be rejecting the refresh
+// token itself, and it will never become valid again
+fn classify_refresh_error(
+    code: u16,
+    body: std::result::Result<String, reqwest::Error>,
+) -> Error {
+    let Ok(body) = body else {
+        return Error::RequestFailed { status: code };
+    };
+    match body.clone().json_with_path::<ConnectErrorRes>() {
+        Ok(json) if json.error == "invalid_grant" => {
+            Error::RefreshTokenInvalid
+        }
+        Ok(json) => classify_login_error(&json, code),
+        Err(e) => {
+            log::warn!("{e}: {body}");
+            Error::RequestFailed { status: code }
+        }
+    }
 }
 
 fn classify_login_error(error_res: &ConnectErrorRes, code: u16) -> Error {
