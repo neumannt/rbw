@@ -79,10 +79,11 @@ pub async fn login(
     sock: &mut crate::sock::Sock,
     state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
     environment: &rbw::protocol::Environment,
+    explicit: bool,
 ) -> anyhow::Result<()> {
     let db = load_db_or_new().await?;
 
-    if db.needs_login() {
+    if db.needs_login() || (explicit && db.refresh_token_rejected) {
         let url_str = config_base_url().await?;
         let url = reqwest::Url::parse(&url_str)
             .context("failed to parse base url")?;
@@ -331,6 +332,7 @@ async fn login_success(
 ) -> anyhow::Result<()> {
     db.access_token = Some(access_token.clone());
     db.refresh_token = Some(refresh_token.clone());
+    db.refresh_token_rejected = false;
     db.kdf = Some(kdf);
     db.iterations = Some(iterations);
     db.memory = memory;
@@ -521,6 +523,10 @@ pub async fn sync(
     } else {
         return Err(anyhow::anyhow!("failed to find refresh token in db"));
     };
+    if db.refresh_token_rejected {
+        return Err(rbw::error::Error::RefreshTokenInvalid)
+            .context("failed to sync database from server");
+    }
     let (
         tokens,
         (protected_key, protected_private_key, protected_org_keys, entries),
@@ -528,19 +534,17 @@ pub async fn sync(
         Ok(res) => res,
         // the server will never accept this refresh token again, so
         // retrying on every sync interval would just repeat the same
-        // rejection. drop the tokens instead, so that the next command goes
-        // through the normal login flow.
+        // rejection. remember that instead, so that syncing fails without
+        // contacting the server until the next `rbw login`.
         Err(rbw::error::Error::RefreshTokenInvalid) => {
             // a concurrent sync may have rotated the token while this
             // request was in flight, in which case the stored one is still
-            // valid, so only clear the tokens if they are still the ones we
-            // sent
+            // valid, so only mark it if it is still the one we sent
             let mut current = load_db().await?;
             if current.refresh_token.as_deref()
                 == Some(refresh_token.as_str())
             {
-                current.access_token = None;
-                current.refresh_token = None;
+                current.refresh_token_rejected = true;
                 save_db(&current).await?;
             }
             return Err(rbw::error::Error::RefreshTokenInvalid)

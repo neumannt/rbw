@@ -176,7 +176,12 @@ impl Environment {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Action {
-    Login,
+    // explicit is set for `rbw login` itself (as opposed to the implicit
+    // login before other commands), which also logs in again if the server
+    // rejected the stored refresh token
+    Login {
+        explicit: bool,
+    },
     Register,
     Unlock,
     CheckLock,

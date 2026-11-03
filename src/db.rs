@@ -179,6 +179,11 @@ pub struct HistoryEntry {
 pub struct Db {
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
+    // set when the server rejected the refresh token. syncing then fails
+    // until the next explicit `rbw login`, but the cached entries stay
+    // usable, so that this doesn't require network access to read them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refresh_token_rejected: bool,
 
     pub kdf: Option<crate::api::KdfType>,
     pub iterations: Option<u32>,
@@ -300,4 +305,30 @@ fn write_atomic(file: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     tmp.as_file().sync_all()?;
     tmp.persist(file).map_err(|e| e.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_refresh_token_rejected_serialization() {
+        // dbs written before the flag existed must still load, and the flag
+        // shouldn't show up in the file unless it is set
+        let db: Db = serde_json::from_str(
+            r#"{"access_token":"a","refresh_token":"r","kdf":null,"iterations":null,"memory":null,"parallelism":null,"protected_key":null,"protected_private_key":null,"protected_org_keys":{},"entries":[]}"#,
+        )
+        .unwrap();
+        assert!(!db.refresh_token_rejected);
+        let json = serde_json::to_string(&db).unwrap();
+        assert!(!json.contains("refresh_token_rejected"));
+
+        let db = Db {
+            refresh_token_rejected: true,
+            ..db
+        };
+        let json = serde_json::to_string(&db).unwrap();
+        let db: Db = serde_json::from_str(&json).unwrap();
+        assert!(db.refresh_token_rejected);
+    }
 }
