@@ -194,6 +194,11 @@ pub struct Db {
     pub protected_org_keys: std::collections::HashMap<String, String>,
 
     pub entries: Vec<Entry>,
+    // entries which were deleted, but can still be restored. these are kept
+    // separately, so that nothing which looks at the entries sees them by
+    // accident.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trash: Vec<Entry>,
 }
 
 impl Db {

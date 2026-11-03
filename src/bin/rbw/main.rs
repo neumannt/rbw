@@ -271,8 +271,30 @@ enum Opt {
         find_args: FindArgs,
     },
 
-    #[command(about = "Remove a given entry", visible_alias = "rm")]
+    #[command(
+        about = "Move a given entry to the trash",
+        long_about = "Move a given entry to the trash\n\n\
+            Entries in the trash can be listed with `rbw trash` and \
+            restored with `rbw restore`. The server deletes them \
+            permanently after 30 days.",
+        visible_alias = "rm"
+    )]
     Remove {
+        #[command(flatten)]
+        find_args: FindArgs,
+        #[arg(
+            long,
+            help = "Delete the entry permanently instead (this also works \
+                for entries in the trash)"
+        )]
+        permanent: bool,
+    },
+
+    #[command(about = "List the entries in the trash")]
+    Trash,
+
+    #[command(about = "Restore an entry from the trash")]
+    Restore {
         #[command(flatten)]
         find_args: FindArgs,
     },
@@ -319,6 +341,8 @@ impl Opt {
             Self::Generate { .. } => "generate".to_string(),
             Self::Edit { .. } => "edit".to_string(),
             Self::Remove { .. } => "remove".to_string(),
+            Self::Trash => "trash".to_string(),
+            Self::Restore { .. } => "restore".to_string(),
             Self::History { .. } => "history".to_string(),
             Self::Lock => "lock".to_string(),
             Self::Purge => "purge".to_string(),
@@ -523,7 +547,18 @@ fn main() {
             find_args.folder.as_deref(),
             find_args.ignorecase,
         ),
-        Opt::Remove { find_args } => commands::remove(
+        Opt::Remove {
+            find_args,
+            permanent,
+        } => commands::remove(
+            find_args.needle,
+            find_args.user.as_deref(),
+            find_args.folder.as_deref(),
+            find_args.ignorecase,
+            permanent,
+        ),
+        Opt::Trash => commands::trash(),
+        Opt::Restore { find_args } => commands::restore(
             find_args.needle,
             find_args.user.as_deref(),
             find_args.folder.as_deref(),

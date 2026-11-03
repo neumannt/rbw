@@ -143,6 +143,7 @@ pub async fn sync(
         String,
         std::collections::HashMap<String, String>,
         Vec<crate::db::Entry>,
+        Vec<crate::db::Entry>,
     ),
 )> {
     with_exchange_refresh_token_async(
@@ -162,6 +163,7 @@ async fn sync_once(
     String,
     String,
     std::collections::HashMap<String, String>,
+    Vec<crate::db::Entry>,
     Vec<crate::db::Entry>,
 )> {
     let (client, _) = api_client_async().await?;
@@ -230,6 +232,28 @@ fn remove_once(access_token: &str, id: &str) -> Result<()> {
     let (client, _) = api_client()?;
     client.remove(access_token, id)?;
     Ok(())
+}
+
+pub fn trash(
+    access_token: &str,
+    refresh_token: &str,
+    id: &str,
+) -> Result<(Option<RefreshedTokens>, ())> {
+    with_exchange_refresh_token(access_token, refresh_token, |access_token| {
+        let (client, _) = api_client()?;
+        client.trash(access_token, id)
+    })
+}
+
+pub fn restore(
+    access_token: &str,
+    refresh_token: &str,
+    id: &str,
+) -> Result<(Option<RefreshedTokens>, ())> {
+    with_exchange_refresh_token(access_token, refresh_token, |access_token| {
+        let (client, _) = api_client()?;
+        client.restore(access_token, id)
+    })
 }
 
 pub fn list_folders(

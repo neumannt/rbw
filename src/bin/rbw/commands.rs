@@ -1883,9 +1883,14 @@ pub fn edit(
         name
     );
 
-    let entry =
-        find_entry_undecrypted(&db, name, username, folder, ignore_case)
-            .with_context(|| format!("couldn't find entry for '{desc}'"))?;
+    let entry = find_entry_undecrypted(
+        &db.entries,
+        name,
+        username,
+        folder,
+        ignore_case,
+    )
+    .with_context(|| format!("couldn't find entry for '{desc}'"))?;
 
     // edit the entry as the server currently has it, and only change the
     // values that were edited, so that everything else (including anything
@@ -2013,6 +2018,7 @@ pub fn remove(
     username: Option<&str>,
     folder: Option<&str>,
     ignore_case: bool,
+    permanent: bool,
 ) -> anyhow::Result<()> {
     unlock()?;
 
@@ -2024,13 +2030,76 @@ pub fn remove(
         name
     );
 
+    // entries can be deleted permanently from the trash as well
+    let entries: Vec<rbw::db::Entry> = if permanent {
+        db.entries.iter().chain(&db.trash).cloned().collect()
+    } else {
+        db.entries.clone()
+    };
     let entry =
-        find_entry_undecrypted(&db, name, username, folder, ignore_case)
+        find_entry_undecrypted(&entries, name, username, folder, ignore_case)
             .with_context(|| format!("couldn't find entry for '{desc}'"))?;
 
     let (access_token, refresh_token) = api_tokens(&db);
+    let (tokens, ()) = if permanent {
+        rbw::actions::remove(access_token, refresh_token, &entry.id)?
+    } else {
+        rbw::actions::trash(access_token, refresh_token, &entry.id)?
+    };
+    store_tokens(&mut db, tokens)?;
+
+    crate::actions::sync()?;
+
+    Ok(())
+}
+
+pub fn trash() -> anyhow::Result<()> {
+    unlock()?;
+
+    let db = load_db()?;
+    let mut names: Vec<String> =
+        batch_decrypt(&db.trash, decrypt_search_cipher)?
+            .iter()
+            .map(DecryptedSearchCipher::display_name)
+            .collect();
+    names.sort_unstable();
+    for name in names {
+        println!("{name}");
+    }
+
+    Ok(())
+}
+
+pub fn restore(
+    name: Needle,
+    username: Option<&str>,
+    folder: Option<&str>,
+    ignore_case: bool,
+) -> anyhow::Result<()> {
+    unlock()?;
+
+    let mut db = load_db()?;
+
+    let desc = format!(
+        "{}{}",
+        username.map_or_else(String::new, |s| format!("{s}@")),
+        name
+    );
+
+    let entry = find_entry_undecrypted(
+        &db.trash,
+        name,
+        username,
+        folder,
+        ignore_case,
+    )
+    .with_context(|| {
+        format!("couldn't find entry for '{desc}' in the trash")
+    })?;
+
+    let (access_token, refresh_token) = api_tokens(&db);
     let (tokens, ()) =
-        rbw::actions::remove(access_token, refresh_token, &entry.id)?;
+        rbw::actions::restore(access_token, refresh_token, &entry.id)?;
     store_tokens(&mut db, tokens)?;
 
     crate::actions::sync()?;
@@ -2147,22 +2216,27 @@ fn find_entry(
     folder: Option<&str>,
     ignore_case: bool,
 ) -> anyhow::Result<(rbw::db::Entry, DecryptedCipher)> {
-    let entry =
-        find_entry_undecrypted(db, needle, username, folder, ignore_case)?;
+    let entry = find_entry_undecrypted(
+        &db.entries,
+        needle,
+        username,
+        folder,
+        ignore_case,
+    )?;
     let decrypted_entry = decrypt_one(&entry)?;
     Ok((entry, decrypted_entry))
 }
 
 // like find_entry, but without decrypting the secrets of the entry
 fn find_entry_undecrypted(
-    db: &rbw::db::Db,
+    entries: &[rbw::db::Entry],
     mut needle: Needle,
     username: Option<&str>,
     folder: Option<&str>,
     ignore_case: bool,
 ) -> anyhow::Result<rbw::db::Entry> {
     if let Needle::Uuid(uuid, s) = needle {
-        for cipher in &db.entries {
+        for cipher in entries {
             if rbw::uuid::Uuid::parse(&cipher.id) == Some(uuid) {
                 return Ok(cipher.clone());
             }
@@ -2170,11 +2244,10 @@ fn find_entry_undecrypted(
         needle = Needle::Name(s);
     }
 
-    let ciphers: Vec<(rbw::db::Entry, DecryptedSearchCipher)> = db
-        .entries
+    let ciphers: Vec<(rbw::db::Entry, DecryptedSearchCipher)> = entries
         .iter()
         .cloned()
-        .zip(batch_decrypt(&db.entries, decrypt_search_cipher)?)
+        .zip(batch_decrypt(entries, decrypt_search_cipher)?)
         .collect();
     let (entry, _) =
         find_entry_raw(&ciphers, &needle, username, folder, ignore_case)?;

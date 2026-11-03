@@ -440,9 +440,6 @@ impl SyncResCipher {
         &self,
         folders: &[SyncResFolder],
     ) -> Option<crate::db::Entry> {
-        if self.deleted_date.is_some() {
-            return None;
-        }
         let history =
             self.password_history
                 .as_ref()
@@ -1146,6 +1143,7 @@ impl Client {
         String,
         std::collections::HashMap<String, String>,
         Vec<crate::db::Entry>,
+        Vec<crate::db::Entry>,
     )> {
         let client = self.reqwest_client().await?;
         let res = client
@@ -1160,9 +1158,16 @@ impl Client {
             reqwest::StatusCode::OK => {
                 let sync_res: SyncRes = res.json_with_path().await?;
                 let folders = sync_res.folders.clone();
-                let ciphers = sync_res
+                let (trash, ciphers): (Vec<_>, Vec<_>) = sync_res
                     .ciphers
                     .iter()
+                    .partition(|cipher| cipher.deleted_date.is_some());
+                let ciphers = ciphers
+                    .into_iter()
+                    .filter_map(|cipher| cipher.to_entry(&folders))
+                    .collect();
+                let trash = trash
+                    .into_iter()
                     .filter_map(|cipher| cipher.to_entry(&folders))
                     .collect();
                 let org_keys = sync_res
@@ -1176,6 +1181,7 @@ impl Client {
                     sync_res.profile.private_key,
                     org_keys,
                     ciphers,
+                    trash,
                 ))
             }
             reqwest::StatusCode::UNAUTHORIZED => {
@@ -1353,6 +1359,38 @@ impl Client {
             .map_err(|source| Error::Reqwest { source })?;
         match res.status() {
             reqwest::StatusCode::OK => Ok(()),
+            reqwest::StatusCode::UNAUTHORIZED => {
+                Err(Error::RequestUnauthorized)
+            }
+            _ => Err(request_failed(res)),
+        }
+    }
+
+    // moves the cipher to the trash, from where it can be restored
+    pub fn trash(&self, access_token: &str, id: &str) -> Result<()> {
+        self.put_cipher_action(access_token, id, "delete")
+    }
+
+    pub fn restore(&self, access_token: &str, id: &str) -> Result<()> {
+        self.put_cipher_action(access_token, id, "restore")
+    }
+
+    fn put_cipher_action(
+        &self,
+        access_token: &str,
+        id: &str,
+        action: &str,
+    ) -> Result<()> {
+        let client = reqwest::blocking::Client::new();
+        let res = client
+            .put(self.api_url(&format!("/ciphers/{id}/{action}")))
+            .header("Authorization", format!("Bearer {access_token}"))
+            .send()
+            .map_err(|source| Error::Reqwest { source })?;
+        match res.status() {
+            reqwest::StatusCode::OK | reqwest::StatusCode::NO_CONTENT => {
+                Ok(())
+            }
             reqwest::StatusCode::UNAUTHORIZED => {
                 Err(Error::RequestUnauthorized)
             }
