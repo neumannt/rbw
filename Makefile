@@ -23,6 +23,12 @@ check:
 	@cargo check --locked --all-targets --target x86_64-unknown-linux-musl
 .PHONY: check
 
+lint:
+	@cargo clippy --locked --all-targets --all-features -- -Dwarnings
+	@cargo fmt --check
+	@cargo deny check
+.PHONY: lint
+
 doc:
 	@cargo doc --locked --workspace
 .PHONY: doc
