@@ -1,73 +1,36 @@
 # rbw
 
-This is an unofficial command line client for
-[Bitwarden](https://bitwarden.com/). Although Bitwarden does come with its own
-[command line client](https://help.bitwarden.com/article/cli/), it is
-limited by being stateless - to use it, you're required to manually lock and
-unlock the client, and pass the temporary keys around in environment variables,
-which makes it very difficult to use. `rbw` avoids this problem by
-maintaining a background process which is able to hold the keys in memory,
-similar to the way that `ssh-agent` or `gpg-agent` work. This allows the client
-to be used in a much simpler way, with the background agent taking care of
-maintaining the necessary state.
+This is a fork of [`rbw`](https://github.com/doy/rbw), an unofficial command
+line client for [Bitwarden](https://bitwarden.com/). Unlike the official
+[command line client](https://help.bitwarden.com/article/cli/), which is
+stateless and requires passing temporary keys around in environment
+variables, `rbw` keeps the keys in memory in a background agent, similar to
+`ssh-agent` or `gpg-agent`.
 
-## Maintenance
+## Differences from upstream
 
-I consider `rbw` to be essentially feature-complete for me at this point. While
-I still use it on a daily basis, and will continue to fix regressions as they
-occur, I am unlikely to spend time implementing new features on my own. If you
-would like to see new functionality in `rbw`, I am more than happy to review
-and merge pull requests implementing those features.
+* **Fewer dependencies.** A password manager is a high value target, and every
+  crate it depends on increases the attack surface. This fork replaces many
+  dependencies with small local implementations.
+* **Convenience features.** `rbw tui` for browsing the vault interactively,
+  `rbw show` for displaying an entry without its secrets, and a trash.
 
 ## Installation
 
-### Arch Linux
+The `rbw` packages of Linux distributions, Homebrew, Nix, etc, as well as
+`cargo install rbw`, all install upstream `rbw`, not this fork. Build it from
+a checkout of [this repository](https://github.com/neumannt/rbw) instead:
 
-`rbw` is available in the [extra
-repository](https://archlinux.org/packages/extra/x86_64/rbw/).
-Alternatively, you can install
-[`rbw-git`](https://aur.archlinux.org/packages/rbw-git/) from the AUR, which
-will always build from the latest master commit.
+```sh
+git clone https://github.com/neumannt/rbw
+cd rbw
+cargo install --locked --path .
+```
 
-### Debian/Ubuntu
-
-`rbw` is officially packaged for Debian as
-[`rust-rbw`](https://tracker.debian.org/pkg/rust-rbw) and is available in
-testing (forky). You can install it using `sudo apt install rbw`.
-
-Alternatively, you can download a Debian package from
-[https://git.tozt.net/rbw/releases/deb/
-](https://git.tozt.net/rbw/releases/deb/). The packages are signed by
-[`minisign`](https://github.com/jedisct1/minisign), and can be verified using
-the public key `RWTM0AZ5RpROOfAIWx1HvYQ6pw1+FKwN6526UFTKNImP/Hz3ynCFst3r`.
-
-### Fedora/EPEL
-
-`rbw` is available in [Fedora and EPEL 9](https://bodhi.fedoraproject.org/updates/?packages=rust-rbw)
-(for RHEL and compatible distributions).
-
-You can install it using `sudo dnf install rbw`.
-
-### Homebrew
-
-`rbw` is available in the [Homebrew repository](https://formulae.brew.sh/formula/rbw). You can install it via `brew install rbw`.
-
-### Nix
-
-`rbw` is available in the
-[NixOS repository](https://search.nixos.org/packages?show=rbw). You can try
-it out via `nix-shell -p rbw`.
-
-### Alpine
-
-`rbw` is available in the [community repository](https://pkgs.alpinelinux.org/packages?name=rbw). You can install it with `apk add rbw`.
-
-### Other
-
-With a working Rust installation, `rbw` can be installed via `cargo install
---locked rbw`. This requires that the
+This installs `rbw` and `rbw-agent` into `~/.cargo/bin`. At runtime, the
 [`pinentry`](https://www.gnupg.org/related_software/pinentry/index.en.html)
-program is installed (to display password prompts).
+program is needed to display password prompts, and copying to the clipboard
+uses `wl-copy` (Wayland), `xclip` or `xsel` (X11), or `pbcopy` (macOS).
 
 ## Configuration
 
@@ -131,6 +94,8 @@ copies the password to the clipboard instead). You can also use the flag
 flag will show the output as JSON. In addition to matching against the name,
 you can pass a UUID as the name to search for the entry with that id, or a
 URL to search for an entry with a matching website entry.
+
+### TUI
 
 `rbw tui` opens an interactive browser for the vault, with fuzzy search as you
 type. `Ctrl+P`, `Ctrl+U` and `Ctrl+T` copy the password, the username and the
