@@ -765,6 +765,11 @@ struct CiphersPostReq {
     identity: Option<CipherIdentity>,
     #[serde(rename = "secureNote")]
     secure_note: Option<CipherSecureNote>,
+    #[serde(
+        rename = "encryptedFor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    encrypted_for: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -785,6 +790,11 @@ struct CiphersPutReq {
     secure_note: Option<CipherSecureNote>,
     #[serde(rename = "passwordHistory")]
     password_history: Vec<CiphersPutReqHistory>,
+    #[serde(
+        rename = "encryptedFor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    encrypted_for: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -1227,6 +1237,7 @@ impl Client {
             card: None,
             identity: None,
             secure_note: None,
+            encrypted_for: access_token_user_id(access_token),
         };
         match data {
             crate::db::EntryData::Login {
@@ -1361,6 +1372,7 @@ impl Client {
             card: None,
             identity: None,
             secure_note: None,
+            encrypted_for: access_token_user_id(access_token),
             fields: fields
                 .iter()
                 .map(|field| CipherField {
@@ -1814,6 +1826,17 @@ async fn write_http_response(
     stream.shutdown().await
 }
 
+// the id of the user that an access token was issued to. vaultwarden 1.37
+// requires it as encryptedFor when creating or updating ciphers, to make sure
+// they were encrypted with the right user's keys. the token is only decoded
+// here, not verified, since it is only used to fill in this field.
+fn access_token_user_id(access_token: &str) -> Option<String> {
+    let payload = access_token.split('.').nth(1)?;
+    let payload = crate::base64::decode_url_safe_no_pad(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    claims.get("sub")?.as_str().map(str::to_string)
+}
+
 // unlike during login, invalid_grant is unambiguous here: no password or
 // second factor is involved, so the server can only be rejecting the refresh
 // token itself, and it will never become valid again
@@ -1899,6 +1922,26 @@ fn classify_login_error(error_res: &ConnectErrorRes, code: u16) -> Error {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_access_token_user_id() {
+        let token = |claims: &str| {
+            format!(
+                "{}.{}.signature",
+                crate::base64::encode_url_safe_no_pad(r#"{"alg":"RS256"}"#),
+                crate::base64::encode_url_safe_no_pad(claims)
+            )
+        };
+        assert_eq!(
+            access_token_user_id(&token(
+                r#"{"sub":"4f5e1b2c-0000-4000-8000-000000000000","exp":1}"#
+            ))
+            .as_deref(),
+            Some("4f5e1b2c-0000-4000-8000-000000000000")
+        );
+        assert_eq!(access_token_user_id(&token(r#"{"exp":1}"#)), None);
+        assert_eq!(access_token_user_id("not a jwt"), None);
+    }
 
     #[tokio::test]
     async fn test_sso_callback_server() {
