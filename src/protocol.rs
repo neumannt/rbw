@@ -134,6 +134,14 @@ pub struct Environment {
 }
 
 impl Environment {
+    // the relevant environment variables of the current process
+    pub fn from_process(tty: Option<std::ffi::OsString>) -> Self {
+        let env_vars = std::env::vars_os()
+            .filter(|(var, _)| (*ENVIRONMENT_VARIABLES_OS).contains(var))
+            .collect();
+        Self::new(tty, env_vars)
+    }
+
     pub fn new(
         tty: Option<std::ffi::OsString>,
         env_vars: Vec<(std::ffi::OsString, std::ffi::OsString)>,

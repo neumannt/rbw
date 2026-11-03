@@ -187,11 +187,5 @@ fn get_environment() -> rbw::protocol::Environment {
             .ok()
             .map(|p| std::ffi::OsString::from_vec(p.as_bytes().to_vec()))
     });
-
-    let env_vars = std::env::vars_os()
-        .filter(|(var_name, _)| {
-            (*rbw::protocol::ENVIRONMENT_VARIABLES_OS).contains(var_name)
-        })
-        .collect();
-    rbw::protocol::Environment::new(tty, env_vars)
+    rbw::protocol::Environment::from_process(tty)
 }

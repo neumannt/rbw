@@ -41,7 +41,12 @@ async fn tokio_main(
             notifications_handler,
             master_password_reprompt: std::collections::HashSet::new(),
             master_password_reprompt_initialized: false,
-            last_environment: rbw::protocol::Environment::default(),
+            // the agent is started by the client, so until a client
+            // connects, its own environment is the best guess for where
+            // pinentry should go (e.g. for ssh agent requests)
+            last_environment: rbw::protocol::Environment::from_process(
+                std::env::var_os("RBW_TTY"),
+            ),
         }));
 
     let agent =
