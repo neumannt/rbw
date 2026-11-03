@@ -99,7 +99,8 @@ URL to search for an entry with a matching website entry.
 
 `rbw tui` opens an interactive browser for the vault, with fuzzy search as you
 type. `Ctrl+P`, `Ctrl+U` and `Ctrl+T` copy the password, the username and the
-TOTP code of the selected entry, and `F1` shows the other keys.
+TOTP code of the selected entry, and `F1` shows the other keys. Copied values
+are cleared from the clipboard after 30 seconds, or when `rbw tui` exits.
 
 *Note to users of the official Bitwarden server (at bitwarden.com)*: The
 official server has a tendency to detect command line traffic as bot traffic

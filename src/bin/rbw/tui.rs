@@ -14,6 +14,10 @@ use crate::term::{Key, Terminal};
 
 const TICK: std::time::Duration = std::time::Duration::from_millis(250);
 const STATUS_TIME: std::time::Duration = std::time::Duration::from_secs(4);
+// copied values are cleared from the clipboard after this long, or when the
+// tui exits, whichever comes first
+const CLIPBOARD_TIME: std::time::Duration =
+    std::time::Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -425,6 +429,8 @@ struct App {
     totp: Option<(String, Totp)>,
     popup: Option<Popup>,
     status: Option<(String, bool, std::time::Instant)>,
+    // the hash of the last copied value, and when it was copied
+    copied: Option<([u8; 32], std::time::Instant)>,
     quit: bool,
     screen: Screen,
 }
@@ -448,6 +454,7 @@ impl App {
             totp: None,
             popup: None,
             status: None,
+            copied: None,
             quit: false,
             screen: Screen::default(),
         };
@@ -457,6 +464,14 @@ impl App {
 
     fn run(&mut self, term: &mut Terminal) -> anyhow::Result<()> {
         while !self.quit {
+            if self
+                .copied
+                .is_some_and(|(_, at)| at.elapsed() >= CLIPBOARD_TIME)
+            {
+                if let Err(e) = self.clear_clipboard() {
+                    self.set_status(format!("{e:#}"), true);
+                }
+            }
             self.update_totp();
             self.draw()?;
             for key in term.read_keys(TICK)? {
@@ -615,12 +630,33 @@ impl App {
             .map(|item| item.rows[row].label.clone())
             .unwrap_or_default();
         let res = self.row_value(term, row).and_then(|value| {
-            crate::clipboard::store(&value, crate::clipboard::Mode::On)
+            crate::clipboard::store(&value, crate::clipboard::Mode::On)?;
+            Ok(crate::clipboard::hash(&value))
         });
         match res {
-            Ok(()) => self.set_status(format!("copied {label}"), false),
+            Ok(hash) => {
+                self.copied = Some((hash, std::time::Instant::now()));
+                self.set_status(
+                    format!(
+                        "copied {label}, clearing the clipboard in {}s",
+                        CLIPBOARD_TIME.as_secs()
+                    ),
+                    false,
+                );
+            }
             Err(e) => self.set_status(format!("{e:#}"), true),
         }
+    }
+
+    // clears the clipboard if it still holds the last copied value
+    fn clear_clipboard(&mut self) -> anyhow::Result<()> {
+        let Some((hash, _)) = self.copied.take() else {
+            return Ok(());
+        };
+        if crate::clipboard::clear_if_unchanged(&hash)? {
+            self.set_status("cleared the clipboard", false);
+        }
+        Ok(())
     }
 
     fn toggle_reveal(&mut self, term: &Terminal) {
@@ -1832,7 +1868,12 @@ pub fn run() -> anyhow::Result<()> {
     let items = load_items()?;
     let mut term = Terminal::enter()?;
     let mut app = App::new(items);
-    app.run(&mut term)
+    let res = app.run(&mut term);
+    drop(term);
+    if let Err(e) = app.clear_clipboard() {
+        eprintln!("{e:#}");
+    }
+    res
 }
 
 #[cfg(test)]
