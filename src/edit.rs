@@ -4,13 +4,18 @@ use std::io::{Read as _, Write as _};
 
 use std::io::IsTerminal as _;
 
-pub fn edit(contents: &str, help: &str) -> Result<String> {
+// when editing existing contents, empty piped input is refused, since it is
+// much more likely to come from running in a context without any stdin than
+// from actually wanting to clear everything
+pub fn edit(contents: &str, help: &str, existing: bool) -> Result<String> {
     if !std::io::stdin().is_terminal() {
         // directly read from piped content
-        return match std::io::read_to_string(std::io::stdin()) {
-            Err(e) => Err(Error::FailedToReadFromStdin { err: e }),
-            Ok(res) => Ok(res),
-        };
+        let res = std::io::read_to_string(std::io::stdin())
+            .map_err(|err| Error::FailedToReadFromStdin { err })?;
+        if existing && res.trim().is_empty() {
+            return Err(Error::EmptyStdin);
+        }
+        return Ok(res);
     }
 
     let mut var = "VISUAL";

@@ -263,7 +263,8 @@ enum Opt {
             The editor to use is determined  by the value of the \
             $VISUAL or $EDITOR environment variables. The first line \
             will be saved as the password and the remainder will be saved \
-            as a note."
+            as a note. If stdin is not a terminal, the new contents are \
+            read from stdin instead, and empty input is refused."
     )]
     Edit {
         #[command(flatten)]

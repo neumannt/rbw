@@ -1710,7 +1710,7 @@ pub fn add(
         .map(|username| crate::actions::encrypt(username, None))
         .transpose()?;
 
-    let contents = rbw::edit::edit("", HELP_PW)?;
+    let contents = rbw::edit::edit("", HELP_PW, false)?;
 
     let (password, notes) = parse_editor(&contents);
     let password = password
@@ -1895,7 +1895,7 @@ pub fn edit(
                 write!(contents, "\n{notes}\n").unwrap();
             }
 
-            let contents = rbw::edit::edit(&contents, HELP_PW)?;
+            let contents = rbw::edit::edit(&contents, HELP_PW, true)?;
 
             let (password, notes) = parse_editor(&contents);
             let password = password
@@ -1945,7 +1945,8 @@ pub fn edit(
                 || "\n".to_string(),
                 |notes| format!("{notes}\n"),
             );
-            let contents = rbw::edit::edit(&editor_content, HELP_NOTES)?;
+            let contents =
+                rbw::edit::edit(&editor_content, HELP_NOTES, true)?;
 
             // prepend blank line to be parsed as pw by `parse_editor`
             let (_, notes) = parse_editor(&format!("\n{contents}\n"));

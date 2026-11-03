@@ -39,6 +39,9 @@ pub enum Error {
     #[error("failed to read from stdin: {err}")]
     FailedToReadFromStdin { err: std::io::Error },
 
+    #[error("refusing to save empty input from stdin")]
+    EmptyStdin,
+
     #[error(
         "failed to run editor {}: {err}",
         .editor.to_string_lossy(),
