@@ -192,6 +192,11 @@ pub enum Action {
         entry_key: Option<String>,
         org_id: Option<String>,
     },
+    // decrypts many cipherstrings with a single request. failures are
+    // reported for each item individually.
+    DecryptMany {
+        items: Vec<DecryptItem>,
+    },
     Encrypt {
         plaintext: String,
         org_id: Option<String>,
@@ -201,11 +206,29 @@ pub enum Action {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct DecryptItem {
+    pub cipherstring: String,
+    pub entry_key: Option<String>,
+    pub org_id: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Response {
     Ack,
-    Error { error: String },
-    Decrypt { plaintext: String },
-    Encrypt { cipherstring: String },
-    Version { version: u32 },
+    Error {
+        error: String,
+    },
+    Decrypt {
+        plaintext: String,
+    },
+    DecryptMany {
+        plaintexts: Vec<Result<String, String>>,
+    },
+    Encrypt {
+        cipherstring: String,
+    },
+    Version {
+        version: u32,
+    },
 }
