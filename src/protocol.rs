@@ -139,7 +139,9 @@ impl Environment {
         let env_vars = std::env::vars_os()
             .filter(|(var, _)| (*ENVIRONMENT_VARIABLES_OS).contains(var))
             .collect();
-        Self::new(tty, env_vars)
+        let over_ssh = std::env::var_os("SSH_CONNECTION")
+            .is_some_and(|val| !val.is_empty());
+        Self::new(tty, drop_session_bus_over_ssh(env_vars, over_ssh))
     }
 
     pub fn new(
@@ -169,8 +171,76 @@ impl Environment {
             .iter()
             .map(|(var, val)| (var.0.clone(), val.0.clone()))
             .filter(|(var, _)| (*ENVIRONMENT_VARIABLES_OS).contains(var))
+            // an empty value (e.g. from `DBUS_SESSION_BUS_ADDRESS= rbw ...`)
+            // is meant as unset, but pinentry would still see the variable
+            // as present
+            .filter(|(_, val)| !val.is_empty())
             .collect()
     }
+}
+
+// over ssh, pinentry-gnome3 would prompt on the remote machine's desktop via
+// the session bus, even with a forwarded display; without it, it uses the tty
+fn drop_session_bus_over_ssh(
+    mut env_vars: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    over_ssh: bool,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    if over_ssh {
+        env_vars.retain(|(var, _)| var != "DBUS_SESSION_BUS_ADDRESS");
+    }
+    env_vars
+}
+
+#[test]
+fn test_drop_session_bus_over_ssh() {
+    let vars = |vars: &[(&str, &str)]| -> Vec<_> {
+        vars.iter().map(|(k, v)| (k.into(), v.into())).collect()
+    };
+    let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+    let term = ("TERM", "xterm");
+
+    assert_eq!(
+        drop_session_bus_over_ssh(vars(&[bus, term]), true),
+        vars(&[term])
+    );
+    assert_eq!(
+        drop_session_bus_over_ssh(vars(&[bus, ("DISPLAY", "")]), true),
+        vars(&[("DISPLAY", "")])
+    );
+    assert_eq!(
+        drop_session_bus_over_ssh(vars(&[bus, term]), false),
+        vars(&[bus, term])
+    );
+    assert_eq!(
+        drop_session_bus_over_ssh(
+            vars(&[bus, ("DISPLAY", "localhost:10.0")]),
+            true
+        ),
+        vars(&[("DISPLAY", "localhost:10.0")])
+    );
+    assert_eq!(
+        drop_session_bus_over_ssh(
+            vars(&[bus, ("WAYLAND_DISPLAY", "wayland-0")]),
+            true
+        ),
+        vars(&[("WAYLAND_DISPLAY", "wayland-0")])
+    );
+}
+
+#[test]
+fn test_env_vars_skip_empty() {
+    let env = Environment::new(
+        None,
+        vec![
+            ("DISPLAY".into(), "".into()),
+            ("DBUS_SESSION_BUS_ADDRESS".into(), "".into()),
+            ("TERM".into(), "xterm".into()),
+        ],
+    );
+    assert_eq!(
+        env.env_vars(),
+        std::collections::HashMap::from([("TERM".into(), "xterm".into())])
+    );
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
