@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use std::io::{Read as _, Write as _};
 
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncReadExt as _;
 
 #[derive(
     serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq,
@@ -235,61 +235,34 @@ impl Db {
         Ok(slf)
     }
 
-    // XXX need to make this atomic
     pub fn save(&self, server: &str, email: &str) -> Result<()> {
         let file = crate::dirs::db_file(server, email);
-        // unwrap is safe here because Self::filename is explicitly
-        // constructed as a filename in a directory
-        std::fs::create_dir_all(file.parent().unwrap()).map_err(
-            |source| Error::SaveDb {
+        let json = serde_json::to_string(self).map_err(|source| {
+            Error::SaveDbJson {
                 source,
                 file: file.clone(),
-            },
-        )?;
-        let mut fh =
-            std::fs::File::create(&file).map_err(|source| Error::SaveDb {
-                source,
-                file: file.clone(),
-            })?;
-        fh.write_all(
-            serde_json::to_string(self)
-                .map_err(|source| Error::SaveDbJson {
-                    source,
-                    file: file.clone(),
-                })?
-                .as_bytes(),
-        )
-        .map_err(|source| Error::SaveDb { source, file })?;
+            }
+        })?;
+        write_atomic(&file, json.as_bytes())
+            .map_err(|source| Error::SaveDb { source, file })?;
         Ok(())
     }
 
-    // XXX need to make this atomic
     pub async fn save_async(&self, server: &str, email: &str) -> Result<()> {
         let file = crate::dirs::db_file(server, email);
-        // unwrap is safe here because Self::filename is explicitly
-        // constructed as a filename in a directory
-        tokio::fs::create_dir_all(file.parent().unwrap())
-            .await
-            .map_err(|source| Error::SaveDbAsync {
+        let json = serde_json::to_string(self).map_err(|source| {
+            Error::SaveDbJson {
                 source,
                 file: file.clone(),
-            })?;
-        let mut fh =
-            tokio::fs::File::create(&file).await.map_err(|source| {
-                Error::SaveDbAsync {
-                    source,
-                    file: file.clone(),
-                }
-            })?;
-        fh.write_all(
-            serde_json::to_string(self)
-                .map_err(|source| Error::SaveDbJson {
-                    source,
-                    file: file.clone(),
-                })?
-                .as_bytes(),
-        )
+            }
+        })?;
+        let tmp = file.clone();
+        tokio::task::spawn_blocking(move || {
+            write_atomic(&tmp, json.as_bytes())
+        })
         .await
+        .map_err(std::io::Error::other)
+        .and_then(|res| res)
         .map_err(|source| Error::SaveDbAsync { source, file })?;
         Ok(())
     }
@@ -313,4 +286,18 @@ impl Db {
             || self.kdf.is_none()
             || self.protected_key.is_none()
     }
+}
+
+// written to a temporary file in the same directory and renamed over the
+// old one, so a concurrent load never sees a truncated or partial file
+fn write_atomic(file: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    // unwrap is safe here because the db file is explicitly constructed as
+    // a filename in a directory
+    let dir = file.parent().unwrap();
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(data)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(file).map_err(|e| e.error)?;
+    Ok(())
 }
