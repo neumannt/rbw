@@ -193,57 +193,27 @@ fn add_once(
     Ok(())
 }
 
-pub fn edit(
+pub fn get_cipher(
     access_token: &str,
     refresh_token: &str,
     id: &str,
-    org_id: Option<&str>,
-    name: &str,
-    data: &crate::db::EntryData,
-    fields: &[crate::db::Field],
-    notes: Option<&str>,
-    folder_uuid: Option<&str>,
-    history: &[crate::db::HistoryEntry],
-) -> Result<(Option<RefreshedTokens>, ())> {
+) -> Result<(Option<RefreshedTokens>, serde_json::Value)> {
     with_exchange_refresh_token(access_token, refresh_token, |access_token| {
-        edit_once(
-            access_token,
-            id,
-            org_id,
-            name,
-            data,
-            fields,
-            notes,
-            folder_uuid,
-            history,
-        )
+        let (client, _) = api_client()?;
+        client.get_cipher(access_token, id)
     })
 }
 
-fn edit_once(
+pub fn update_cipher(
     access_token: &str,
+    refresh_token: &str,
     id: &str,
-    org_id: Option<&str>,
-    name: &str,
-    data: &crate::db::EntryData,
-    fields: &[crate::db::Field],
-    notes: Option<&str>,
-    folder_uuid: Option<&str>,
-    history: &[crate::db::HistoryEntry],
-) -> Result<()> {
-    let (client, _) = api_client()?;
-    client.edit(
-        access_token,
-        id,
-        org_id,
-        name,
-        data,
-        fields,
-        notes,
-        folder_uuid,
-        history,
-    )?;
-    Ok(())
+    cipher: &serde_json::Value,
+) -> Result<(Option<RefreshedTokens>, ())> {
+    with_exchange_refresh_token(access_token, refresh_token, |access_token| {
+        let (client, _) = api_client()?;
+        client.update_cipher(access_token, id, cipher)
+    })
 }
 
 pub fn remove(

@@ -187,6 +187,9 @@ pub enum Error {
     #[error("api request returned error: {status}")]
     RequestFailed { status: u16 },
 
+    #[error("api request returned error: {status}: {message}")]
+    RequestFailedWithMessage { status: u16, message: String },
+
     #[error("api request unauthorized")]
     RequestUnauthorized,
 

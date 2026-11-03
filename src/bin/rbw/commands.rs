@@ -1883,65 +1883,82 @@ pub fn edit(
         name
     );
 
-    let (entry, decrypted) =
-        find_entry(&db, name, username, folder, ignore_case)
+    let entry =
+        find_entry_undecrypted(&db, name, username, folder, ignore_case)
             .with_context(|| format!("couldn't find entry for '{desc}'"))?;
 
-    let (data, fields, notes, history) = match &decrypted.data {
-        DecryptedData::Login { password, .. } => {
+    // edit the entry as the server currently has it, and only change the
+    // values that were edited, so that everything else (including anything
+    // rbw doesn't know about, like passkeys or attachments) is sent back
+    // untouched
+    let (access_token, refresh_token) = api_tokens(&db);
+    let (tokens, mut cipher) =
+        rbw::actions::get_cipher(access_token, refresh_token, &entry.id)?;
+    store_tokens(&mut db, tokens)?;
+    if !cipher.is_object() {
+        return Err(anyhow::anyhow!("unexpected response from the server"));
+    }
+
+    let entry_key = cipher["key"].as_str().map(str::to_string);
+    let org_id = cipher["organizationId"].as_str().map(str::to_string);
+    let decrypt = |cipherstring: &serde_json::Value| {
+        cipherstring
+            .as_str()
+            .map(|cipherstring| {
+                crate::actions::decrypt(
+                    cipherstring,
+                    entry_key.as_deref(),
+                    org_id.as_deref(),
+                )
+            })
+            .transpose()
+    };
+    let encrypt = |plaintext: Option<String>| {
+        plaintext.map_or(Ok(serde_json::Value::Null), |plaintext| {
+            crate::actions::encrypt_with_key(
+                &plaintext,
+                entry_key.as_deref(),
+                org_id.as_deref(),
+            )
+            .map(serde_json::Value::String)
+        })
+    };
+
+    let old_notes = decrypt(&cipher["notes"])?;
+    let new_notes = match cipher["type"].as_u64() {
+        Some(1) => {
+            let old_password = decrypt(&cipher["login"]["password"])?;
             let mut contents =
-                format!("{}\n", password.as_deref().unwrap_or(""));
-            if let Some(notes) = decrypted.notes {
+                format!("{}\n", old_password.as_deref().unwrap_or(""));
+            if let Some(notes) = &old_notes {
                 write!(contents, "\n{notes}\n").unwrap();
             }
 
             let contents = rbw::edit::edit(&contents, HELP_PW, true)?;
+            let (new_password, new_notes) = parse_editor(&contents);
 
-            let (password, notes) = parse_editor(&contents);
-            let password = password
-                .map(|password| {
-                    crate::actions::encrypt(
-                        &password,
-                        entry.org_id.as_deref(),
-                    )
-                })
-                .transpose()?;
-            let notes = notes
-                .map(|notes| {
-                    crate::actions::encrypt(&notes, entry.org_id.as_deref())
-                })
-                .transpose()?;
-            let mut history = entry.history.clone();
-            let rbw::db::EntryData::Login {
-                username: entry_username,
-                password: entry_password,
-                uris: entry_uris,
-                totp: entry_totp,
-            } = &entry.data
-            else {
-                unreachable!();
-            };
-
-            if let Some(prev_password) = entry_password.clone() {
-                let new_history_entry = rbw::db::HistoryEntry {
-                    last_used_date: jiff::Timestamp::now().to_string(),
-                    password: prev_password,
-                };
-                history.insert(0, new_history_entry);
+            if new_password != old_password {
+                let old_password = cipher["login"]["password"].take();
+                cipher["login"]["password"] = encrypt(new_password)?;
+                if !old_password.is_null() {
+                    let history = &mut cipher["passwordHistory"];
+                    if !history.is_array() {
+                        *history = serde_json::Value::Array(vec![]);
+                    }
+                    // unwrap is safe because of the check above
+                    history.as_array_mut().unwrap().insert(
+                        0,
+                        serde_json::json!({
+                            "lastUsedDate": jiff::Timestamp::now().to_string(),
+                            "password": old_password,
+                        }),
+                    );
+                }
             }
-
-            let data = rbw::db::EntryData::Login {
-                username: entry_username.clone(),
-                password,
-                uris: entry_uris.clone(),
-                totp: entry_totp.clone(),
-            };
-            (data, entry.fields, notes, history)
+            new_notes
         }
-        DecryptedData::SecureNote => {
-            let data = rbw::db::EntryData::SecureNote {};
-
-            let editor_content = decrypted.notes.map_or_else(
+        Some(2) => {
+            let editor_content = old_notes.as_ref().map_or_else(
                 || "\n".to_string(),
                 |notes| format!("{notes}\n"),
             );
@@ -1950,34 +1967,40 @@ pub fn edit(
 
             // prepend blank line to be parsed as pw by `parse_editor`
             let (_, notes) = parse_editor(&format!("\n{contents}\n"));
-
-            let notes = notes
-                .map(|notes| {
-                    crate::actions::encrypt(&notes, entry.org_id.as_deref())
-                })
-                .transpose()?;
-
-            (data, entry.fields, notes, entry.history)
+            notes
         }
-        _ => {
+        Some(_) => {
             return Err(anyhow::anyhow!(
                 "modifications are only supported for login and note entries"
             ));
         }
+        None => {
+            return Err(anyhow::anyhow!(
+                "failed to find the type of the entry in the server response"
+            ));
+        }
     };
+    if new_notes != old_notes {
+        cipher["notes"] = encrypt(new_notes)?;
+    }
+
+    // the server rejects the update if the entry was changed elsewhere since
+    // it was fetched above
+    if let Some(revision_date) = cipher.get("revisionDate").cloned() {
+        cipher["lastKnownRevisionDate"] = revision_date;
+    }
+    // attachments are returned as a list, but updates take a map from id to
+    // file name, and don't need it to keep the attachments
+    if let Some(cipher) = cipher.as_object_mut() {
+        cipher.remove("attachments");
+    }
 
     let (access_token, refresh_token) = api_tokens(&db);
-    let (tokens, ()) = rbw::actions::edit(
+    let (tokens, ()) = rbw::actions::update_cipher(
         access_token,
         refresh_token,
         &entry.id,
-        entry.org_id.as_deref(),
-        &entry.name,
-        &data,
-        &fields,
-        notes.as_deref(),
-        entry.folder_id.as_deref(),
-        &history,
+        &cipher,
     )?;
     store_tokens(&mut db, tokens)?;
 
@@ -2001,8 +2024,9 @@ pub fn remove(
         name
     );
 
-    let (entry, _) = find_entry(&db, name, username, folder, ignore_case)
-        .with_context(|| format!("couldn't find entry for '{desc}'"))?;
+    let entry =
+        find_entry_undecrypted(&db, name, username, folder, ignore_case)
+            .with_context(|| format!("couldn't find entry for '{desc}'"))?;
 
     let (access_token, refresh_token) = api_tokens(&db);
     let (tokens, ()) =
@@ -2118,15 +2142,29 @@ fn version_or_quit() -> anyhow::Result<u32> {
 
 fn find_entry(
     db: &rbw::db::Db,
-    mut needle: Needle,
+    needle: Needle,
     username: Option<&str>,
     folder: Option<&str>,
     ignore_case: bool,
 ) -> anyhow::Result<(rbw::db::Entry, DecryptedCipher)> {
+    let entry =
+        find_entry_undecrypted(db, needle, username, folder, ignore_case)?;
+    let decrypted_entry = decrypt_one(&entry)?;
+    Ok((entry, decrypted_entry))
+}
+
+// like find_entry, but without decrypting the secrets of the entry
+fn find_entry_undecrypted(
+    db: &rbw::db::Db,
+    mut needle: Needle,
+    username: Option<&str>,
+    folder: Option<&str>,
+    ignore_case: bool,
+) -> anyhow::Result<rbw::db::Entry> {
     if let Needle::Uuid(uuid, s) = needle {
         for cipher in &db.entries {
             if rbw::uuid::Uuid::parse(&cipher.id) == Some(uuid) {
-                return Ok((cipher.clone(), decrypt_one(cipher)?));
+                return Ok(cipher.clone());
             }
         }
         needle = Needle::Name(s);
@@ -2140,8 +2178,7 @@ fn find_entry(
         .collect();
     let (entry, _) =
         find_entry_raw(&ciphers, &needle, username, folder, ignore_case)?;
-    let decrypted_entry = decrypt_one(&entry)?;
-    Ok((entry, decrypted_entry))
+    Ok(entry)
 }
 
 fn find_entry_raw(

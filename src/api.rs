@@ -772,39 +772,6 @@ struct CiphersPostReq {
     encrypted_for: Option<String>,
 }
 
-#[derive(serde::Serialize, Debug)]
-struct CiphersPutReq {
-    #[serde(rename = "type")]
-    ty: u32, // XXX what are the valid types?
-    #[serde(rename = "folderId")]
-    folder_id: Option<String>,
-    #[serde(rename = "organizationId")]
-    organization_id: Option<String>,
-    name: String,
-    notes: Option<String>,
-    login: Option<CipherLogin>,
-    card: Option<CipherCard>,
-    identity: Option<CipherIdentity>,
-    fields: Vec<CipherField>,
-    #[serde(rename = "secureNote")]
-    secure_note: Option<CipherSecureNote>,
-    #[serde(rename = "passwordHistory")]
-    password_history: Vec<CiphersPutReqHistory>,
-    #[serde(
-        rename = "encryptedFor",
-        skip_serializing_if = "Option::is_none"
-    )]
-    encrypted_for: Option<String>,
-}
-
-#[derive(serde::Serialize, Debug)]
-struct CiphersPutReqHistory {
-    #[serde(rename = "LastUsedDate")]
-    last_used_date: String,
-    #[serde(rename = "Password")]
-    password: String,
-}
-
 #[derive(serde::Deserialize, Debug)]
 struct FoldersRes {
     #[serde(rename = "Data", alias = "data")]
@@ -1344,144 +1311,44 @@ impl Client {
         }
     }
 
-    pub fn edit(
+    // the cipher as the server currently has it, as raw json, so that it
+    // can be modified and sent back without losing anything rbw doesn't know
+    // about
+    pub fn get_cipher(
         &self,
         access_token: &str,
         id: &str,
-        org_id: Option<&str>,
-        name: &str,
-        data: &crate::db::EntryData,
-        fields: &[crate::db::Field],
-        notes: Option<&str>,
-        folder_uuid: Option<&str>,
-        history: &[crate::db::HistoryEntry],
+    ) -> Result<serde_json::Value> {
+        let client = reqwest::blocking::Client::new();
+        let res = client
+            .get(self.api_url(&format!("/ciphers/{id}")))
+            .header("Authorization", format!("Bearer {access_token}"))
+            .send()
+            .map_err(|source| Error::Reqwest { source })?;
+        match res.status() {
+            reqwest::StatusCode::OK => res.json_with_path(),
+            reqwest::StatusCode::UNAUTHORIZED => {
+                Err(Error::RequestUnauthorized)
+            }
+            _ => Err(request_failed(res)),
+        }
+    }
+
+    pub fn update_cipher(
+        &self,
+        access_token: &str,
+        id: &str,
+        cipher: &serde_json::Value,
     ) -> Result<()> {
-        let mut req = CiphersPutReq {
-            ty: match data {
-                crate::db::EntryData::Login { .. } => 1,
-                crate::db::EntryData::SecureNote => 2,
-                crate::db::EntryData::Card { .. } => 3,
-                crate::db::EntryData::Identity { .. } => 4,
-                crate::db::EntryData::SshKey { .. } => unreachable!(),
-            },
-            folder_id: folder_uuid.map(std::string::ToString::to_string),
-            organization_id: org_id.map(std::string::ToString::to_string),
-            name: name.to_string(),
-            notes: notes.map(std::string::ToString::to_string),
-            login: None,
-            card: None,
-            identity: None,
-            secure_note: None,
-            encrypted_for: access_token_user_id(access_token),
-            fields: fields
-                .iter()
-                .map(|field| CipherField {
-                    ty: field.ty,
-                    name: field.name.clone(),
-                    value: field.value.clone(),
-                    linked_id: field.linked_id,
-                })
-                .collect(),
-            password_history: history
-                .iter()
-                .map(|entry| CiphersPutReqHistory {
-                    last_used_date: entry.last_used_date.clone(),
-                    password: entry.password.clone(),
-                })
-                .collect(),
-        };
-        match data {
-            crate::db::EntryData::Login {
-                username,
-                password,
-                totp,
-                uris,
-            } => {
-                let uris = if uris.is_empty() {
-                    None
-                } else {
-                    Some(
-                        uris.iter()
-                            .map(|s| CipherLoginUri {
-                                uri: Some(s.uri.clone()),
-                                match_type: s.match_type,
-                            })
-                            .collect(),
-                    )
-                };
-                req.login = Some(CipherLogin {
-                    username: username.clone(),
-                    password: password.clone(),
-                    totp: totp.clone(),
-                    uris,
-                });
-            }
-            crate::db::EntryData::Card {
-                cardholder_name,
-                number,
-                brand,
-                exp_month,
-                exp_year,
-                code,
-            } => {
-                req.card = Some(CipherCard {
-                    cardholder_name: cardholder_name.clone(),
-                    number: number.clone(),
-                    brand: brand.clone(),
-                    exp_month: exp_month.clone(),
-                    exp_year: exp_year.clone(),
-                    code: code.clone(),
-                });
-            }
-            crate::db::EntryData::Identity {
-                title,
-                first_name,
-                middle_name,
-                last_name,
-                address1,
-                address2,
-                address3,
-                city,
-                state,
-                postal_code,
-                country,
-                phone,
-                email,
-                ssn,
-                license_number,
-                passport_number,
-                username,
-            } => {
-                req.identity = Some(CipherIdentity {
-                    title: title.clone(),
-                    first_name: first_name.clone(),
-                    middle_name: middle_name.clone(),
-                    last_name: last_name.clone(),
-                    address1: address1.clone(),
-                    address2: address2.clone(),
-                    address3: address3.clone(),
-                    city: city.clone(),
-                    state: state.clone(),
-                    postal_code: postal_code.clone(),
-                    country: country.clone(),
-                    phone: phone.clone(),
-                    email: email.clone(),
-                    ssn: ssn.clone(),
-                    license_number: license_number.clone(),
-                    passport_number: passport_number.clone(),
-                    username: username.clone(),
-                });
-            }
-            crate::db::EntryData::SecureNote => {
-                req.secure_note = Some(CipherSecureNote {});
-            }
-            crate::db::EntryData::SshKey { .. } => unreachable!(),
+        let mut cipher = cipher.clone();
+        if let Some(user_id) = access_token_user_id(access_token) {
+            cipher["encryptedFor"] = serde_json::Value::String(user_id);
         }
         let client = reqwest::blocking::Client::new();
         let res = client
             .put(self.api_url(&format!("/ciphers/{id}")))
             .header("Authorization", format!("Bearer {access_token}"))
-            .json(&req)
+            .json(&cipher)
             .send()
             .map_err(|source| Error::Reqwest { source })?;
         match res.status() {
@@ -1489,9 +1356,7 @@ impl Client {
             reqwest::StatusCode::UNAUTHORIZED => {
                 Err(Error::RequestUnauthorized)
             }
-            _ => Err(Error::RequestFailed {
-                status: res.status().as_u16(),
-            }),
+            _ => Err(request_failed(res)),
         }
     }
 
@@ -1824,6 +1689,27 @@ async fn write_http_response(
         )
         .await?;
     stream.shutdown().await
+}
+
+// includes the message from the response body if there is one, since that
+// is often more useful than the status (e.g. when an update is rejected
+// because the cipher was changed elsewhere in the meantime)
+fn request_failed(res: reqwest::blocking::Response) -> Error {
+    let status = res.status().as_u16();
+    let message = res
+        .text()
+        .ok()
+        .and_then(|body| {
+            serde_json::from_str::<serde_json::Value>(&body).ok()
+        })
+        .and_then(|json| {
+            ["message", "Message"]
+                .iter()
+                .find_map(|key| json.get(*key)?.as_str().map(str::to_string))
+        });
+    message.map_or(Error::RequestFailed { status }, |message| {
+        Error::RequestFailedWithMessage { status, message }
+    })
 }
 
 // the id of the user that an access token was issued to. vaultwarden 1.37

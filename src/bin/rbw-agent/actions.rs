@@ -602,18 +602,9 @@ async fn decrypt_cipher(
             "failed to find decryption keys in in-memory state"
         ));
     };
-    let entry_key = if let Some(entry_key) = entry_key {
-        let key_cipherstring =
-            rbw::cipherstring::CipherString::new(entry_key)
-                .context("failed to parse individual item encryption key")?;
-        Some(rbw::locked::Keys::new(
-            key_cipherstring.decrypt_locked_symmetric(keys).context(
-                "failed to decrypt individual item encryption key",
-            )?,
-        ))
-    } else {
-        None
-    };
+    let entry_key = entry_key
+        .map(|entry_key| decrypt_entry_key(keys, entry_key))
+        .transpose()?;
 
     let mut sha256 = sha2::Sha256::new();
     sha256.update(cipherstring);
@@ -778,10 +769,26 @@ pub async fn decrypt_many(
     Ok(())
 }
 
+// entries can have their own encryption key, which is itself encrypted with
+// the user's or the organization's key
+fn decrypt_entry_key(
+    keys: &rbw::locked::Keys,
+    entry_key: &str,
+) -> anyhow::Result<rbw::locked::Keys> {
+    let key_cipherstring = rbw::cipherstring::CipherString::new(entry_key)
+        .context("failed to parse individual item encryption key")?;
+    Ok(rbw::locked::Keys::new(
+        key_cipherstring
+            .decrypt_locked_symmetric(keys)
+            .context("failed to decrypt individual item encryption key")?,
+    ))
+}
+
 pub async fn encrypt(
     sock: &mut crate::sock::Sock,
     state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
     plaintext: &str,
+    entry_key: Option<&str>,
     org_id: Option<&str>,
 ) -> anyhow::Result<()> {
     let state = state.lock().await;
@@ -790,8 +797,11 @@ pub async fn encrypt(
             "failed to find encryption keys in in-memory state"
         ));
     };
+    let entry_key = entry_key
+        .map(|entry_key| decrypt_entry_key(keys, entry_key))
+        .transpose()?;
     let cipherstring = rbw::cipherstring::CipherString::encrypt_symmetric(
-        keys,
+        entry_key.as_ref().unwrap_or(keys),
         plaintext.as_bytes(),
     )
     .context("failed to encrypt plaintext secret")?;
