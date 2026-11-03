@@ -132,6 +132,10 @@ flag will show the output as JSON. In addition to matching against the name,
 you can pass a UUID as the name to search for the entry with that id, or a
 URL to search for an entry with a matching website entry.
 
+`rbw tui` opens an interactive browser for the vault, with fuzzy search as you
+type. `Ctrl+P`, `Ctrl+U` and `Ctrl+T` copy the password, the username and the
+TOTP code of the selected entry, and `F1` shows the other keys.
+
 *Note to users of the official Bitwarden server (at bitwarden.com)*: The
 official server has a tendency to detect command line traffic as bot traffic
 (see [this issue](https://github.com/bitwarden/cli/issues/383) for details). In

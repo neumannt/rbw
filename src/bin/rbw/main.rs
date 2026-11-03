@@ -6,7 +6,13 @@ use clap::{CommandFactory as _, Parser as _};
 mod actions;
 mod clipboard;
 mod commands;
+#[cfg(feature = "clipboard")]
+mod fuzzy;
 mod sock;
+#[cfg(feature = "clipboard")]
+mod term;
+#[cfg(feature = "clipboard")]
+mod tui;
 
 #[derive(Debug, clap::Args)]
 struct FindArgs {
@@ -145,6 +151,10 @@ enum Opt {
         #[command(flatten)]
         clipboard_args: ClipboardArgs,
     },
+
+    #[cfg(feature = "clipboard")]
+    #[command(about = "Browse the vault interactively and copy values")]
+    Tui,
 
     #[command(about = "Search for entries")]
     Search {
@@ -335,6 +345,8 @@ impl Opt {
             Self::List { .. } => "list".to_string(),
             Self::Get { .. } => "get".to_string(),
             Self::Show { .. } => "show".to_string(),
+            #[cfg(feature = "clipboard")]
+            Self::Tui => "tui".to_string(),
             Self::Search { .. } => "search".to_string(),
             Self::Code { .. } => "code".to_string(),
             Self::Add { .. } => "add".to_string(),
@@ -475,6 +487,8 @@ fn main() {
             clipboard_args.mode(),
             find_args.ignorecase,
         ),
+        #[cfg(feature = "clipboard")]
+        Opt::Tui => tui::run(),
         Opt::Search {
             term,
             fields,

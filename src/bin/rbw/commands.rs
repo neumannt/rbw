@@ -2323,7 +2323,7 @@ fn find_entry_raw(
 // Decryptor, and are run twice: first to collect the cipherstrings they
 // need, which are then decrypted with a single agent request, and then
 // again with the results.
-trait Decryptor {
+pub trait Decryptor {
     fn decrypt(
         &self,
         cipherstring: &str,
@@ -2391,7 +2391,7 @@ impl Decryptor for BatchDecryptor {
     }
 }
 
-fn batch_decrypt<T>(
+pub fn batch_decrypt<T>(
     entries: &[rbw::db::Entry],
     f: impl Fn(&rbw::db::Entry, &dyn Decryptor) -> anyhow::Result<T>,
 ) -> anyhow::Result<Vec<T>> {
@@ -3041,7 +3041,7 @@ fn parse_editor(contents: &str) -> (Option<String>, Option<String>) {
     (password, notes)
 }
 
-fn load_db() -> anyhow::Result<rbw::db::Db> {
+pub fn load_db() -> anyhow::Result<rbw::db::Db> {
     let config = rbw::config::Config::load()?;
     config.email.as_ref().map_or_else(
         || Err(anyhow::anyhow!("failed to find email address in config")),
@@ -3179,6 +3179,17 @@ fn parse_totp_secret(secret: &str) -> anyhow::Result<TotpParams> {
             period: TOTP_DEFAULT_STEP,
         })
     }
+}
+
+// the current code, and the number of seconds it is still valid for
+#[cfg(feature = "clipboard")]
+pub fn totp_now(secret: &str) -> anyhow::Result<(String, u64)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let params = parse_totp_secret(secret)?;
+    let code = totp_code(&params, now)?;
+    Ok((code, params.period - now % params.period))
 }
 
 fn generate_totp(secret: &str) -> anyhow::Result<String> {
