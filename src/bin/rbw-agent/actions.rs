@@ -575,12 +575,22 @@ pub async fn sync(
     Ok(())
 }
 
+// whether the master password was already asked for a reprompt, so that
+// callers can share one prompt between several decryptions
+#[derive(Clone, Copy)]
+enum Reprompt {
+    Pending,
+    Done,
+    Failed,
+}
+
 async fn decrypt_cipher(
     state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
     environment: &rbw::protocol::Environment,
     cipherstring: &str,
     entry_key: Option<&str>,
     org_id: Option<&str>,
+    reprompt: &mut Reprompt,
 ) -> anyhow::Result<String> {
     let mut state = state.lock().await;
     if !state.master_password_reprompt_initialized() {
@@ -612,77 +622,19 @@ async fn decrypt_cipher(
         .master_password_reprompt
         .contains(&master_password_reprompt)
     {
-        let db = load_db().await?;
-
-        let Some(kdf) = db.kdf else {
-            return Err(anyhow::anyhow!("failed to find kdf type in db"));
-        };
-
-        let Some(iterations) = db.iterations else {
-            return Err(anyhow::anyhow!(
-                "failed to find number of iterations in db"
-            ));
-        };
-
-        let memory = db.memory;
-        let parallelism = db.parallelism;
-
-        let Some(protected_key) = db.protected_key else {
-            return Err(anyhow::anyhow!(
-                "failed to find protected key in db"
-            ));
-        };
-        let Some(protected_private_key) = db.protected_private_key else {
-            return Err(anyhow::anyhow!(
-                "failed to find protected private key in db"
-            ));
-        };
-
-        let email = config_email().await?;
-
-        let mut err_msg = None;
-        for i in 1_u8..=3 {
-            let err = if i > 1 {
-                // this unwrap is safe because we only ever continue the loop
-                // if we have set err_msg
-                Some(format!("{} (attempt {}/3)", err_msg.unwrap(), i))
-            } else {
-                None
-            };
-            let password = rbw::pinentry::getpin(
-                &config_pinentry().await?,
-                "Master Password",
-                "Accessing this entry requires the master password",
-                err.as_deref(),
-                environment,
-                true,
-            )
-            .await
-            .context("failed to read password from pinentry")?;
-            match rbw::actions::unlock(
-                &email,
-                &password,
-                kdf,
-                iterations,
-                memory,
-                parallelism,
-                &protected_key,
-                &protected_private_key,
-                &db.protected_org_keys,
-            ) {
-                Ok(_) => {
-                    break;
+        match *reprompt {
+            Reprompt::Done => {}
+            Reprompt::Failed => {
+                return Err(anyhow::anyhow!(
+                    "master password reprompt failed"
+                ));
+            }
+            Reprompt::Pending => {
+                if let Err(e) = reprompt_master_password(environment).await {
+                    *reprompt = Reprompt::Failed;
+                    return Err(e);
                 }
-                Err(rbw::error::Error::IncorrectPassword { message }) => {
-                    if i == 3 {
-                        return Err(rbw::error::Error::IncorrectPassword {
-                            message,
-                        })
-                        .context("failed to unlock database");
-                    }
-                    err_msg = Some(message);
-                }
-                Err(e) => return Err(e).context("failed to unlock database"),
+                *reprompt = Reprompt::Done;
             }
         }
     }
@@ -699,6 +651,81 @@ async fn decrypt_cipher(
     Ok(plaintext)
 }
 
+async fn reprompt_master_password(
+    environment: &rbw::protocol::Environment,
+) -> anyhow::Result<()> {
+    let db = load_db().await?;
+
+    let Some(kdf) = db.kdf else {
+        return Err(anyhow::anyhow!("failed to find kdf type in db"));
+    };
+
+    let Some(iterations) = db.iterations else {
+        return Err(anyhow::anyhow!(
+            "failed to find number of iterations in db"
+        ));
+    };
+
+    let memory = db.memory;
+    let parallelism = db.parallelism;
+
+    let Some(protected_key) = db.protected_key else {
+        return Err(anyhow::anyhow!("failed to find protected key in db"));
+    };
+    let Some(protected_private_key) = db.protected_private_key else {
+        return Err(anyhow::anyhow!(
+            "failed to find protected private key in db"
+        ));
+    };
+
+    let email = config_email().await?;
+
+    let mut err_msg = None;
+    for i in 1_u8..=3 {
+        let err = if i > 1 {
+            // this unwrap is safe because we only ever continue the loop
+            // if we have set err_msg
+            Some(format!("{} (attempt {}/3)", err_msg.unwrap(), i))
+        } else {
+            None
+        };
+        let password = rbw::pinentry::getpin(
+            &config_pinentry().await?,
+            "Master Password",
+            "Accessing this entry requires the master password",
+            err.as_deref(),
+            environment,
+            true,
+        )
+        .await
+        .context("failed to read password from pinentry")?;
+        match rbw::actions::unlock(
+            &email,
+            &password,
+            kdf,
+            iterations,
+            memory,
+            parallelism,
+            &protected_key,
+            &protected_private_key,
+            &db.protected_org_keys,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(rbw::error::Error::IncorrectPassword { message }) => {
+                if i == 3 {
+                    return Err(rbw::error::Error::IncorrectPassword {
+                        message,
+                    })
+                    .context("failed to unlock database");
+                }
+                err_msg = Some(message);
+            }
+            Err(e) => return Err(e).context("failed to unlock database"),
+        }
+    }
+    unreachable!()
+}
+
 pub async fn decrypt(
     sock: &mut crate::sock::Sock,
     state: std::sync::Arc<tokio::sync::Mutex<crate::state::State>>,
@@ -707,9 +734,15 @@ pub async fn decrypt(
     entry_key: Option<&str>,
     org_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    let plaintext =
-        decrypt_cipher(state, environment, cipherstring, entry_key, org_id)
-            .await?;
+    let plaintext = decrypt_cipher(
+        state,
+        environment,
+        cipherstring,
+        entry_key,
+        org_id,
+        &mut Reprompt::Pending,
+    )
+    .await?;
     respond_decrypt(sock, plaintext).await?;
 
     Ok(())
@@ -721,6 +754,9 @@ pub async fn decrypt_many(
     environment: &rbw::protocol::Environment,
     items: &[rbw::protocol::DecryptItem],
 ) -> anyhow::Result<()> {
+    // the items of a batch all belong to the same command, so a single
+    // master password reprompt covers all of them
+    let mut reprompt = Reprompt::Pending;
     let mut plaintexts = Vec::with_capacity(items.len());
     for item in items {
         plaintexts.push(
@@ -730,6 +766,7 @@ pub async fn decrypt_many(
                 &item.cipherstring,
                 item.entry_key.as_deref(),
                 item.org_id.as_deref(),
+                &mut reprompt,
             )
             .await
             .map_err(|e| format!("{e:#}")),
@@ -914,6 +951,7 @@ pub async fn get_ssh_public_keys(
                 encrypted,
                 entry.key.as_deref(),
                 entry.org_id.as_deref(),
+                &mut Reprompt::Pending,
             )
             .await?;
 
@@ -953,6 +991,7 @@ pub async fn find_ssh_private_key(
                 public_key_enc,
                 entry.key.as_deref(),
                 entry.org_id.as_deref(),
+                &mut Reprompt::Pending,
             )
             .await?;
             // keys of unsupported types can't match any key we offered
@@ -975,6 +1014,7 @@ pub async fn find_ssh_private_key(
                     private_key_enc,
                     entry.key.as_deref(),
                     entry.org_id.as_deref(),
+                    &mut Reprompt::Pending,
                 )
                 .await?;
 
